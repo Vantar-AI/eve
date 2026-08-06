@@ -1,0 +1,14 @@
+[
+  {
+    "op": "data",
+    "from": "client",
+    "to": "server",
+    "message": "prompt"
+  },
+  {
+    "op": "data",
+    "from": "server",
+    "to": "client",
+    "message": "token"
+  }
+]

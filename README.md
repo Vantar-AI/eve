@@ -13,7 +13,7 @@
 ---
 
 > [!IMPORTANT]
-> Eve is in the design phase. The examples in this repository are design sketches, not a stable language specification or working compiler yet.
+> Eve is an early research prototype. The repository now contains an experimental conversation checker and endpoint projector, but not a network runtime, stable language, or production system.
 
 AI software is becoming distributed, persistent, and increasingly authored by other software. Its unit of execution is no longer a process on one machine: it is a changing graph of models, tools, memory, accelerators, and services spread across a data center.
 
@@ -58,6 +58,30 @@ conversation Generate(prompt: Prompt) -> stream<Token> {
 ```
 
 The compiler would derive compatible endpoint programs, choose transports such as shared memory, QUIC, or RDMA, place work on available hardware, and preserve one traceable conversation identity across them.
+
+## First executable experiment
+
+The Rust prototype implements a deliberately small slice of [RFC-0002](rfcs/0002-conversation-is-the-computation.md): two roles, typed sends, choices, loops, cancellation, terminal states, endpoint projection, and conversation-trace validation.
+
+```bash
+# Validate one global server conversation
+cargo run -- check examples/generate.eveconv.json
+
+# Derive one local protocol machine for each server role
+cargo run -- project examples/generate.eveconv.json
+
+# Accept a valid request → token → cancel conversation
+cargo run -- verify-trace \
+  examples/generate.eveconv.json \
+  examples/traces/generate-cancel.valid.json
+
+# Run the test suite
+cargo test
+```
+
+Projection produces `build/endpoints/client.endpoint.json` and `server.endpoint.json`. The client and server receive dual actions: every send becomes the peer's receive, every selection becomes the peer's branch, and cancellation is explicit on both sides.
+
+The invalid trace in `examples/traces/generate-wrong-order.invalid.json` demonstrates the central property: a `token` message has the correct data type, but Eve rejects it when the server has not first selected the `token` conversation branch.
 
 ## Why Eve?
 
@@ -110,10 +134,16 @@ rfcs/
   0002-...md         Server conversation and Eve Wire proposal
 spec/
   eve-graph-...json  Experimental machine-readable graph schema
+  eve-conversation-...json  Executable global conversation schema
 examples/
   hello.eve          Minimal server-to-server flow
   hello.evegraph.json  The same idea as a typed incomplete graph
+  generate.eveconv.json  Executable request/stream/cancel conversation
+  traces/            Valid and deliberately invalid Eve Wire traces
   evolution.eve      Bounded evolutionary loop
+src/
+  lib.rs             Checker, endpoint projection, trace validation
+  main.rs            Experimental `eve` CLI
 ```
 
 ## Current questions

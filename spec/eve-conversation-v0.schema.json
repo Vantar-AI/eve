@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Vantar-AI/eve/blob/main/spec/eve-conversation-v0.schema.json",
+  "title": "Eve Conversation v0 experimental interchange",
+  "description": "A global two-role conversation that can be projected into local endpoint machines.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eve_conversation",
+    "module",
+    "roles",
+    "types",
+    "initial",
+    "states"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "eve_conversation": {
+      "const": "0.1.0"
+    },
+    "module": {
+      "$ref": "#/$defs/module"
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/role"
+      }
+    },
+    "types": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/typeDefinition"
+      }
+    },
+    "initial": {
+      "$ref": "#/$defs/id"
+    },
+    "states": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/state"
+      }
+    },
+    "annotations": {
+      "$ref": "#/$defs/annotations"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$"
+    },
+    "annotations": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "semantic_version": {
+          "type": "string"
+        }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "placement": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "typeDefinition": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "state": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sendState"
+        },
+        {
+          "$ref": "#/$defs/choiceState"
+        },
+        {
+          "$ref": "#/$defs/cancelState"
+        },
+        {
+          "$ref": "#/$defs/endState"
+        }
+      ]
+    },
+    "sendState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "from",
+        "to",
+        "message",
+        "next"
+      ],
+      "properties": {
+        "kind": {
+          "const": "send"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "message": {
+          "$ref": "#/$defs/id"
+        },
+        "next": {
+          "$ref": "#/$defs/id"
+        },
+        "deadline": {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|ms|s|m|h)$"
+        }
+      }
+    },
+    "choiceState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "chooser",
+        "branches"
+      ],
+      "properties": {
+        "kind": {
+          "const": "choice"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "chooser": {
+          "$ref": "#/$defs/id"
+        },
+        "branches": {
+          "type": "object",
+          "minProperties": 2,
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "cancelState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "from",
+        "to",
+        "scope",
+        "next"
+      ],
+      "properties": {
+        "kind": {
+          "const": "cancel"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "next": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "endState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "end"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    }
+  }
+}

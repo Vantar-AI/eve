@@ -6,5 +6,6 @@
 /build/
 /dist/
 /target/
+/drafts/
 *.eveir
 *.eveplan

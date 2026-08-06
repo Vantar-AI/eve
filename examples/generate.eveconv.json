@@ -1,0 +1,102 @@
+{
+  "$schema": "../spec/eve-conversation-v0.schema.json",
+  "eve_conversation": "0.1.0",
+  "module": {
+    "id": "example.generate",
+    "semantic_version": "0.1.0"
+  },
+  "roles": [
+    {
+      "id": "client",
+      "placement": [
+        "cpu"
+      ],
+      "capabilities": []
+    },
+    {
+      "id": "server",
+      "placement": [
+        "accelerator"
+      ],
+      "capabilities": [
+        "model.infer"
+      ]
+    }
+  ],
+  "types": [
+    {
+      "id": "prompt",
+      "kind": "record",
+      "fields": [
+        {
+          "id": "text",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "token",
+      "kind": "record",
+      "fields": [
+        {
+          "id": "id",
+          "type": "u32"
+        }
+      ]
+    }
+  ],
+  "initial": "start",
+  "states": [
+    {
+      "kind": "send",
+      "id": "start",
+      "from": "client",
+      "to": "server",
+      "message": "prompt",
+      "deadline": "20ms",
+      "next": "decide"
+    },
+    {
+      "kind": "choice",
+      "id": "decide",
+      "chooser": "server",
+      "branches": {
+        "token": "emit-token",
+        "done": "end"
+      }
+    },
+    {
+      "kind": "send",
+      "id": "emit-token",
+      "from": "server",
+      "to": "client",
+      "message": "token",
+      "next": "client-action"
+    },
+    {
+      "kind": "choice",
+      "id": "client-action",
+      "chooser": "client",
+      "branches": {
+        "continue": "decide",
+        "cancel": "cancel"
+      }
+    },
+    {
+      "kind": "cancel",
+      "id": "cancel",
+      "from": "client",
+      "to": "server",
+      "scope": "generation",
+      "next": "end"
+    },
+    {
+      "kind": "end",
+      "id": "end"
+    }
+  ],
+  "annotations": {
+    "title": "Two-role token generation with cancellation",
+    "status": "executable experiment"
+  }
+}

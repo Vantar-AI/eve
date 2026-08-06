@@ -369,6 +369,10 @@ Eve Conversation v0 supports:
 
 Mobility and protocol evolution remain in the semantics so v0 choices do not make them impossible, but implementation follows evidence.
 
+### Prototype status
+
+The initial Rust prototype implements the two-role subset with typed sends, choices, cyclic continuations, cancellation, terminal states, endpoint projection, and offline frame-trace validation. It has no network runtime yet. The executable example and deliberately invalid trace live under `examples/`.
+
 ## Acceptance criteria
 
 RFC-0002 may advance from Draft to Experimental when:

@@ -1,0 +1,30 @@
+[
+  {
+    "op": "data",
+    "from": "client",
+    "to": "server",
+    "message": "prompt"
+  },
+  {
+    "op": "select",
+    "by": "server",
+    "label": "token"
+  },
+  {
+    "op": "data",
+    "from": "server",
+    "to": "client",
+    "message": "token"
+  },
+  {
+    "op": "select",
+    "by": "client",
+    "label": "cancel"
+  },
+  {
+    "op": "cancel",
+    "from": "client",
+    "to": "server",
+    "scope": "generation"
+  }
+]

@@ -81,3 +81,17 @@ Initial interoperability should be pragmatic:
 - compiler hooks for existing kernel and model compilers.
 
 The prototype should prove that Eve adds semantic and performance value without requiring an entire ecosystem to be rewritten.
+
+## Current prototype
+
+The first Rust implementation covers the top of this pipeline:
+
+```text
+Conversation v0 JSON
+    → representation and semantic validation
+    → global conversation state graph
+    → client endpoint machine + server endpoint machine
+    → semantic Eve Wire trace validation
+```
+
+It does not yet execute endpoint machines over a transport. That boundary is deliberate: projection and state validation must be correct before networking adds concurrency and failure.
