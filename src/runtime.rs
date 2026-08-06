@@ -1,11 +1,16 @@
 use crate::{Conversation, Endpoint, EndpointState, Frame, ValidationErrors, project, validate};
+use rcgen::CertifiedKey;
+use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{
+    Arc,
+    mpsc::{self, Receiver, Sender},
+};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -77,6 +82,8 @@ pub enum RuntimeError {
     Application(String),
     #[error("runtime worker panicked")]
     WorkerPanicked,
+    #[error("QUIC transport error: {0}")]
+    Quic(String),
 }
 
 pub fn conversation_identity(conversation: &Conversation) -> Result<String, RuntimeError> {
@@ -320,6 +327,9 @@ pub trait Transport {
     fn plan(&self) -> &'static str;
     fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError>;
     fn receive(&mut self) -> Result<WireEnvelope, RuntimeError>;
+    fn finish(&mut self, _role: &str) -> Result<(), RuntimeError> {
+        Ok(())
+    }
 }
 
 pub struct MemoryTransport {
@@ -413,6 +423,221 @@ impl Transport for TcpTransport {
     }
 }
 
+pub struct QuicListener {
+    endpoint: quinn::Endpoint,
+    certificate: CertificateDer<'static>,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl QuicListener {
+    pub fn bind(address: SocketAddr) -> Result<Self, RuntimeError> {
+        let CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+                .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        let certificate = CertificateDer::from(cert);
+        let private_key = PrivatePkcs8KeyDer::from(signing_key.serialize_der());
+        let server_config =
+            quinn::ServerConfig::with_single_cert(vec![certificate.clone()], private_key.into())
+                .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        let runtime = quic_runtime()?;
+        let endpoint = {
+            let _guard = runtime.enter();
+            quinn::Endpoint::server(server_config, address)?
+        };
+        Ok(Self {
+            endpoint,
+            certificate,
+            runtime,
+        })
+    }
+
+    pub fn local_addr(&self) -> Result<SocketAddr, RuntimeError> {
+        Ok(self.endpoint.local_addr()?)
+    }
+
+    pub fn certificate_der(&self) -> &[u8] {
+        self.certificate.as_ref()
+    }
+
+    pub fn accept(self) -> Result<QuicTransport, RuntimeError> {
+        let Self {
+            endpoint,
+            certificate: _,
+            runtime,
+        } = self;
+        let incoming = runtime
+            .block_on(endpoint.accept())
+            .ok_or_else(|| RuntimeError::Quic("QUIC listener closed".to_string()))?;
+        let connection = runtime
+            .block_on(async { incoming.await })
+            .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        let (send, receive) = runtime
+            .block_on(connection.accept_bi())
+            .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        Ok(QuicTransport {
+            _endpoint: endpoint,
+            _connection: connection,
+            send,
+            receive,
+            finished: false,
+            runtime,
+        })
+    }
+}
+
+pub struct QuicTransport {
+    _endpoint: quinn::Endpoint,
+    _connection: quinn::Connection,
+    send: quinn::SendStream,
+    receive: quinn::RecvStream,
+    finished: bool,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl QuicTransport {
+    pub fn connect(address: SocketAddr, trusted_certificate: &[u8]) -> Result<Self, RuntimeError> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(CertificateDer::from(trusted_certificate.to_vec()))
+            .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        let client_config = quinn::ClientConfig::with_root_certificates(Arc::new(roots))
+            .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        let runtime = quic_runtime()?;
+        let endpoint = {
+            let _guard = runtime.enter();
+            let mut endpoint =
+                quinn::Endpoint::client("0.0.0.0:0".parse().expect("valid address"))?;
+            endpoint.set_default_client_config(client_config);
+            endpoint
+        };
+        let connection = runtime.block_on(async {
+            endpoint
+                .connect(address, "localhost")
+                .map_err(|error| RuntimeError::Quic(error.to_string()))?
+                .await
+                .map_err(|error| RuntimeError::Quic(error.to_string()))
+        })?;
+        let (send, receive) = runtime
+            .block_on(connection.open_bi())
+            .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        Ok(Self {
+            _endpoint: endpoint,
+            _connection: connection,
+            send,
+            receive,
+            finished: false,
+            runtime,
+        })
+    }
+}
+
+impl Transport for QuicTransport {
+    fn plan(&self) -> &'static str {
+        "quic"
+    }
+
+    fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
+        let encoded = encode_envelope(envelope)?;
+        let length = u32::try_from(encoded.len()).map_err(|_| RuntimeError::EnvelopeTooLarge {
+            actual: encoded.len(),
+            limit: u32::MAX as usize,
+        })?;
+        let send = &mut self.send;
+        self.runtime
+            .block_on(async {
+                send.write_all(&length.to_be_bytes()).await?;
+                send.write_all(&encoded).await
+            })
+            .map_err(|error| RuntimeError::Quic(error.to_string()))
+    }
+
+    fn receive(&mut self) -> Result<WireEnvelope, RuntimeError> {
+        let receive = &mut self.receive;
+        let mut length = [0_u8; 4];
+        self.runtime
+            .block_on(receive.read_exact(&mut length))
+            .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        let length = u32::from_be_bytes(length) as usize;
+        if length > MAX_ENVELOPE_BYTES {
+            return Err(RuntimeError::EnvelopeTooLarge {
+                actual: length,
+                limit: MAX_ENVELOPE_BYTES,
+            });
+        }
+        let mut encoded = vec![0; length];
+        self.runtime
+            .block_on(receive.read_exact(&mut encoded))
+            .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        decode_envelope(&encoded)
+    }
+
+    fn finish(&mut self, role: &str) -> Result<(), RuntimeError> {
+        if self.finished {
+            return Ok(());
+        }
+        let send = &mut self.send;
+        let receive = &mut self.receive;
+        match role {
+            "client" => {
+                self.runtime
+                    .block_on(async {
+                        send.write_all(&0_u32.to_be_bytes())
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        read_quic_close_marker(receive).await
+                    })
+                    .map_err(RuntimeError::Quic)?;
+                send.finish()
+                    .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+                self.runtime
+                    .block_on(receive.read_to_end(0))
+                    .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+            }
+            "server" => {
+                self.runtime
+                    .block_on(async {
+                        read_quic_close_marker(receive).await?;
+                        send.write_all(&0_u32.to_be_bytes())
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        receive
+                            .read_to_end(0)
+                            .await
+                            .map_err(|error| error.to_string())
+                    })
+                    .map_err(RuntimeError::Quic)?;
+                send.finish()
+                    .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+            }
+            role => {
+                return Err(RuntimeError::Quic(format!(
+                    "QUIC close handshake does not support role {role}"
+                )));
+            }
+        }
+        self.finished = true;
+        Ok(())
+    }
+}
+
+async fn read_quic_close_marker(receive: &mut quinn::RecvStream) -> Result<(), String> {
+    let mut marker = [0_u8; 4];
+    receive
+        .read_exact(&mut marker)
+        .await
+        .map_err(|error| error.to_string())?;
+    if u32::from_be_bytes(marker) != 0 {
+        return Err("expected Eve QUIC close marker".to_string());
+    }
+    Ok(())
+}
+
+fn quic_runtime() -> Result<tokio::runtime::Runtime, RuntimeError> {
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?)
+}
+
 fn encode_envelope(envelope: &WireEnvelope) -> Result<Vec<u8>, RuntimeError> {
     let encoded = serde_json::to_vec(envelope)?;
     if encoded.len() > MAX_ENVELOPE_BYTES {
@@ -503,6 +728,7 @@ pub fn run_generate_client<T: Transport>(
         }
     }
 
+    transport.finish(machine.role())?;
     Ok(report(&machine, plan, tokens, trace))
 }
 
@@ -552,6 +778,7 @@ pub fn run_generate_server<T: Transport>(
         }
     }
 
+    transport.finish(machine.role())?;
     Ok(report(&machine, plan, tokens, trace))
 }
 
@@ -618,6 +845,38 @@ pub fn run_tcp_demo(
         Ok::<_, RuntimeError>((client, server))
     })?;
     Ok(demo_report("tcp", client, server))
+}
+
+pub fn run_quic_demo(
+    conversation: &Conversation,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+) -> Result<DemoReport, RuntimeError> {
+    let listener = QuicListener::bind("127.0.0.1:0".parse().expect("valid address"))?;
+    let address = listener.local_addr()?;
+    let trusted_certificate = listener.certificate_der().to_vec();
+    let client_conversation = conversation.clone();
+    let server_conversation = conversation.clone();
+    let prompt = prompt.to_string();
+    let (client, server) = std::thread::scope(|scope| {
+        let server_worker = scope.spawn(move || {
+            let mut transport = listener.accept()?;
+            run_generate_server(&server_conversation, &mut transport, token_limit)
+        });
+        let client_worker = scope.spawn(move || {
+            let mut transport = QuicTransport::connect(address, &trusted_certificate)?;
+            run_generate_client(&client_conversation, &mut transport, &prompt, cancel_after)
+        });
+        let client = client_worker
+            .join()
+            .map_err(|_| RuntimeError::WorkerPanicked)??;
+        let server = server_worker
+            .join()
+            .map_err(|_| RuntimeError::WorkerPanicked)??;
+        Ok::<_, RuntimeError>((client, server))
+    })?;
+    Ok(demo_report("quic", client, server))
 }
 
 fn token_payload(frame: &Frame) -> Result<u64, RuntimeError> {
@@ -779,15 +1038,50 @@ mod tests {
     }
 
     #[test]
-    fn memory_and_tcp_preserve_the_same_semantic_trace() {
+    fn quic_plan_runs_the_same_conversation_to_completion() {
+        let report = run_quic_demo(&conversation(), "hello", 3, None).unwrap();
+        assert_eq!(report.transport_plan, "quic");
+        assert_eq!(report.client.tokens, vec![1, 2, 3]);
+        assert_eq!(report.server.tokens, vec![1, 2, 3]);
+        assert!(report.client.completed);
+        assert!(report.server.completed);
+        assert!(report.semantic_trace_equivalent);
+    }
+
+    #[test]
+    fn quic_rejects_an_untrusted_server_certificate() {
+        let listener = QuicListener::bind("127.0.0.1:0".parse().expect("valid address")).unwrap();
+        let address = listener.local_addr().unwrap();
+        let untrusted_listener =
+            QuicListener::bind("127.0.0.1:0".parse().expect("valid address")).unwrap();
+        let untrusted_certificate = untrusted_listener.certificate_der().to_vec();
+        drop(untrusted_listener);
+
+        std::thread::scope(|scope| {
+            let server = scope.spawn(move || listener.accept());
+            let client = QuicTransport::connect(address, &untrusted_certificate);
+            assert!(matches!(client, Err(RuntimeError::Quic(_))));
+            assert!(server.join().unwrap().is_err());
+        });
+    }
+
+    #[test]
+    fn all_transport_plans_preserve_the_same_semantic_trace() {
         let memory = run_memory_demo(&conversation(), "same input", 3, None).unwrap();
         let tcp = run_tcp_demo(&conversation(), "same input", 3, None).unwrap();
+        let quic = run_quic_demo(&conversation(), "same input", 3, None).unwrap();
         assert_eq!(memory.conversation_identity, tcp.conversation_identity);
+        assert_eq!(memory.conversation_identity, quic.conversation_identity);
         assert_eq!(
             memory.client.semantic_trace_identity,
             tcp.client.semantic_trace_identity
         );
+        assert_eq!(
+            memory.client.semantic_trace_identity,
+            quic.client.semantic_trace_identity
+        );
         assert_eq!(memory.client.semantic_trace, tcp.client.semantic_trace);
+        assert_eq!(memory.client.semantic_trace, quic.client.semantic_trace);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use eve::runtime::{
-    TcpTransport, run_generate_client, run_generate_server, run_memory_demo, run_tcp_demo,
+    QuicListener, QuicTransport, TcpTransport, run_generate_client, run_generate_server,
+    run_memory_demo, run_quic_demo, run_tcp_demo,
 };
 use eve::{Conversation, Frame, project, validate, verify_trace};
 use serde::de::DeserializeOwned;
@@ -80,12 +81,41 @@ enum Command {
         #[arg(long)]
         cancel_after: Option<usize>,
     },
+    /// Serve one projected endpoint over authenticated QUIC.
+    ServeQuic {
+        #[arg(default_value = "examples/generate.eveconv.json")]
+        conversation: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:7879")]
+        listen: SocketAddr,
+        /// Write the generated public certificate here for the client to pin.
+        #[arg(long, default_value = "build/eve-quic-cert.der")]
+        certificate_out: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        tokens: usize,
+    },
+    /// Connect the client endpoint over QUIC using a pinned server certificate.
+    ConnectQuic {
+        #[arg(default_value = "examples/generate.eveconv.json")]
+        conversation: PathBuf,
+        #[arg(long, default_value = "127.0.0.1:7879")]
+        server: SocketAddr,
+        #[arg(long, default_value = "build/eve-quic-cert.der")]
+        certificate: PathBuf,
+        #[arg(
+            long,
+            default_value = "Explain why the conversation is the computation."
+        )]
+        prompt: String,
+        #[arg(long)]
+        cancel_after: Option<usize>,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
 enum DemoTransport {
     Memory,
     Tcp,
+    Quic,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -143,6 +173,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     run_memory_demo(&conversation, &prompt, tokens, cancel_after)?
                 }
                 DemoTransport::Tcp => run_tcp_demo(&conversation, &prompt, tokens, cancel_after)?,
+                DemoTransport::Quic => run_quic_demo(&conversation, &prompt, tokens, cancel_after)?,
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
@@ -168,6 +199,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let conversation: Conversation = read_json(&conversation)?;
             let mut transport = TcpTransport::connect(server)?;
+            let report = run_generate_client(&conversation, &mut transport, &prompt, cancel_after)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::ServeQuic {
+            conversation,
+            listen,
+            certificate_out,
+            tokens,
+        } => {
+            let conversation: Conversation = read_json(&conversation)?;
+            let listener = QuicListener::bind(listen)?;
+            if let Some(parent) = certificate_out.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&certificate_out, listener.certificate_der())?;
+            println!(
+                "Eve QUIC server listening on {} (certificate: {})",
+                listener.local_addr()?,
+                certificate_out.display()
+            );
+            let mut transport = listener.accept()?;
+            let report = run_generate_server(&conversation, &mut transport, tokens)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::ConnectQuic {
+            conversation,
+            server,
+            certificate,
+            prompt,
+            cancel_after,
+        } => {
+            let conversation: Conversation = read_json(&conversation)?;
+            let trusted_certificate = fs::read(certificate)?;
+            let mut transport = QuicTransport::connect(server, &trusted_certificate)?;
             let report = run_generate_client(&conversation, &mut transport, &prompt, cancel_after)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }

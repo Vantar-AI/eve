@@ -13,7 +13,7 @@
 ---
 
 > [!IMPORTANT]
-> Eve is an early research prototype. The repository now contains a conversation checker, endpoint projector, and minimal memory/TCP reference runtime. It is not a stable language or production networking system.
+> Eve is an early research prototype. The repository now contains a conversation checker, endpoint projector, and minimal memory/TCP/QUIC reference runtime. It is not a stable language or production networking system.
 
 AI software is becoming distributed, persistent, and increasingly authored by other software. Its unit of execution is no longer a process on one machine: it is a changing graph of models, tools, memory, accelerators, and services spread across a data center.
 
@@ -61,7 +61,7 @@ The compiler would derive compatible endpoint programs, choose transports such a
 
 ## First executable experiment
 
-The Rust prototype implements a deliberately small slice of [RFC-0002](rfcs/0002-conversation-is-the-computation.md): two roles, typed transitions, choices, loops, cancellation, terminal states, endpoint projection, semantic conversation identity, and execution over interchangeable memory and TCP plans.
+The Rust prototype implements a deliberately small slice of [RFC-0002](rfcs/0002-conversation-is-the-computation.md): two roles, typed transitions, choices, loops, cancellation, terminal states, endpoint projection, semantic conversation identity, and execution over interchangeable memory, TCP, and authenticated QUIC plans.
 
 ```bash
 # Validate one global server conversation
@@ -80,6 +80,9 @@ cargo run -- demo --transport memory --tokens 5 --cancel-after 2
 
 # Execute the unchanged conversation over loopback TCP
 cargo run -- demo --transport tcp --tokens 3
+
+# Execute it over authenticated and encrypted loopback QUIC
+cargo run -- demo --transport quic --tokens 3
 
 # Run the test suite
 cargo test
@@ -101,7 +104,19 @@ cargo run -- serve --listen 127.0.0.1:7878 --tokens 4
 cargo run -- connect --server 127.0.0.1:7878 --cancel-after 2
 ```
 
-This first TCP plan is a correctness instrument: blocking, plaintext, unauthenticated, and one conversation per connection. See [the runtime experiment](docs/runtime.md) for its boundary and the QUIC follow-up.
+The QUIC commands use a generated certificate that the client pins explicitly:
+
+```bash
+# Terminal 1: writes the public certificate, then accepts one QUIC connection
+cargo run -- serve-quic --listen 127.0.0.1:7879 \
+  --certificate-out build/eve-quic-cert.der --tokens 4
+
+# Terminal 2: trusts only that exact server certificate
+cargo run -- connect-quic --server 127.0.0.1:7879 \
+  --certificate build/eve-quic-cert.der --cancel-after 2
+```
+
+TCP remains a blocking, plaintext correctness instrument. QUIC adds encryption and pinned server authentication, but the reference runtime is still blocking and handles one conversation per connection. See [the runtime experiment](docs/runtime.md) for the exact boundary.
 
 ## Why Eve?
 
@@ -164,7 +179,7 @@ examples/
   evolution.eve      Bounded evolutionary loop
 src/
   lib.rs             Checker, endpoint projection, trace validation
-  runtime.rs         Endpoint executor, Eve Wire envelope, memory/TCP plans
+  runtime.rs         Endpoint executor and memory/TCP/QUIC wire plans
   main.rs            Experimental `eve` CLI
 ```
 

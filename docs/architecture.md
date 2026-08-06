@@ -93,10 +93,11 @@ Conversation v0 JSON
     → client endpoint machine + server endpoint machine
     → independent endpoint execution
        ├── memory plan
-       └── length-delimited TCP plan
+       ├── length-delimited TCP plan
+       └── TLS-authenticated QUIC plan
     → equivalent semantic trace identities
 ```
 
-Each endpoint checks the conversation name, experimental semantic hash, expected state, and sequence before accepting a frame. The memory and TCP plans serialize the same versioned Eve Wire envelope. The reference `Generate` workload completes normally or through the cancellation branch without transport-specific application logic.
+Each endpoint checks the conversation name, experimental semantic hash, expected state, and sequence before accepting a frame. The memory, TCP, and QUIC plans serialize the same versioned Eve Wire envelope. The reference `Generate` workload completes normally or through the cancellation branch without transport-specific application logic.
 
-This runtime remains an experiment rather than a deployment substrate. It is blocking, supports two static roles, sends JSON payloads, and does not yet implement authentication, encryption, flow control, structural payload validation from Eve type definitions, deadline enforcement, recovery, or transport negotiation. The TCP plan deliberately establishes the semantic baseline before a QUIC plan adds secure multiplexed transport behavior.
+This runtime remains an experiment rather than a deployment substrate. It is blocking, supports two static roles, and sends JSON payloads. QUIC encrypts the connection and authenticates the server through an explicitly pinned certificate, but persistent identities, client authentication, authorization, flow control, structural payload validation from Eve type definitions, deadline enforcement, recovery, and transport negotiation remain unimplemented.
