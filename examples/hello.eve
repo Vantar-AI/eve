@@ -1,0 +1,30 @@
+// Illustrative Eve syntax. This file is not executable yet.
+
+type Message {
+    id: u128
+    body: bytes
+}
+
+network hello {
+    node sender: cpu
+    node receiver: cpu
+
+    stream messages: Message from sender to receiver {
+        ordered by .id
+        capacity 256
+        deadline 5ms
+        delivery at_most_once
+    }
+
+    cell Sender on sender {
+        start {
+            send Message(id: random(), body: b"hello") to messages
+        }
+    }
+
+    cell Receiver on receiver {
+        receive message from messages {
+            log.info("received", id: message.id)
+        }
+    }
+}

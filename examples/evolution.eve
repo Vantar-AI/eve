@@ -1,0 +1,26 @@
+// Illustrative Eve syntax. This file is not executable yet.
+
+population router: Program<Route> {
+    parent stable:v12
+    variants 8
+}
+
+evolve router every 1h {
+    mutate constants within approved_ranges
+    mutate strategy using approved_transforms
+
+    evaluate each on suite("routing-v2") with budget {
+        cpu_time <= 10min
+        memory <= 2GiB
+        network_egress = 0B
+    }
+
+    promote candidate when {
+        candidate.p99_latency < parent.p99_latency * 0.95
+        candidate.error_rate <= parent.error_rate
+        candidate.capabilities <= parent.capabilities
+    }
+
+    rollout canary(1%) for 15min
+    rollback when error_rate > parent.error_rate
+}

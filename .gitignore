@@ -1,0 +1,10 @@
+.DS_Store
+.idea/
+.vscode/
+
+# Future compiler outputs
+/build/
+/dist/
+/target/
+*.eveir
+*.eveplan
