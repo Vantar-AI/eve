@@ -1,6 +1,8 @@
-# Illustrative language surface
+# Illustrative text projection
 
-This file demonstrates the intended feel of Eve. It is not a grammar or compatibility promise.
+This file demonstrates one possible textual view of Eve. It is not the language's source of truth, a grammar, or a compatibility promise.
+
+The authoritative program is the canonical Eve Graph described by [RFC-0001](../rfcs/0001-eve-language-kernel.md). Parsing text proposes a graph transaction; printing a graph produces canonical text. Structural AI tools may edit the graph without passing through text at all.
 
 ## A minimal flow
 
@@ -146,6 +148,8 @@ eve check --diagnostic-format json program.eve
 eve ir emit --version 0 program.eve
 eve plan --inventory cluster.json program.eve
 eve simulate --fail node=model-2 program.eve
+eve graph query --cell model --include effects,capabilities program.evegraph
+eve graph apply --base <content-id> patch.evepatch
 ```
 
 Exact commands will be chosen when a prototype exists. The important property is that formatting, diagnostics, IR production, and failure simulation are deterministic APIs rather than editor-only conveniences.

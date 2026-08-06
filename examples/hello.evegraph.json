@@ -1,0 +1,240 @@
+{
+  "$schema": "../spec/eve-graph-v0.schema.json",
+  "eve_graph": "0.1.0",
+  "module": {
+    "id": "example.hello",
+    "semantic_version": "0.0.0"
+  },
+  "definitions": {
+    "types": [
+      {
+        "id": "u128",
+        "kind": "scalar",
+        "scalar": "u128"
+      },
+      {
+        "id": "bytes",
+        "kind": "scalar",
+        "scalar": "bytes"
+      },
+      {
+        "id": "message",
+        "kind": "record",
+        "fields": [
+          {
+            "id": "id",
+            "type": "u128"
+          },
+          {
+            "id": "body",
+            "type": "bytes"
+          }
+        ],
+        "annotations": {
+          "name": "Message"
+        }
+      }
+    ],
+    "capabilities": [
+      {
+        "id": "log",
+        "resource": "eve:log",
+        "permissions": [
+          "append"
+        ],
+        "delegation": "none"
+      }
+    ],
+    "cells": [
+      {
+        "id": "sender",
+        "ports": [
+          {
+            "id": "messages",
+            "direction": "out",
+            "message": "message",
+            "failures": [
+              "timeout",
+              "unavailable"
+            ]
+          }
+        ],
+        "implementation": {
+          "kind": "hole",
+          "hole": {
+            "id": "send-once",
+            "expected": "handler(start) -> emit(message)",
+            "bindings": [],
+            "effect_ceiling": [
+              "random",
+              "send"
+            ],
+            "failure_ceiling": [
+              "timeout",
+              "unavailable"
+            ],
+            "capability_ceiling": [],
+            "obligations": [
+              "Emit exactly one Message when the start event is received."
+            ]
+          }
+        },
+        "effects": [
+          "random",
+          "send"
+        ],
+        "failures": [
+          "timeout",
+          "unavailable"
+        ],
+        "requires": [],
+        "budget": {
+          "memory": "16MiB"
+        },
+        "placement": {
+          "requires": [
+            "cpu"
+          ],
+          "replicas": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "concurrency": "serial",
+        "evolution": {
+          "mode": "implementation",
+          "preserve": [
+            "ports",
+            "effects",
+            "failures",
+            "capabilities"
+          ]
+        },
+        "annotations": {
+          "name": "Sender"
+        }
+      },
+      {
+        "id": "receiver",
+        "ports": [
+          {
+            "id": "messages",
+            "direction": "in",
+            "message": "message",
+            "failures": []
+          }
+        ],
+        "implementation": {
+          "kind": "hole",
+          "hole": {
+            "id": "log-message",
+            "expected": "handler(message) -> unit",
+            "bindings": [
+              {
+                "id": "message",
+                "type": "message"
+              }
+            ],
+            "effect_ceiling": [
+              "log"
+            ],
+            "failure_ceiling": [],
+            "capability_ceiling": [
+              "log"
+            ],
+            "obligations": [
+              "Append the message identity to the provided log capability."
+            ]
+          }
+        },
+        "effects": [
+          "log"
+        ],
+        "failures": [],
+        "requires": [
+          "log"
+        ],
+        "budget": {
+          "memory": "16MiB"
+        },
+        "placement": {
+          "requires": [
+            "cpu"
+          ],
+          "replicas": {
+            "min": 1,
+            "max": 1
+          }
+        },
+        "concurrency": "serial",
+        "evolution": {
+          "mode": "implementation",
+          "preserve": [
+            "ports",
+            "effects",
+            "failures",
+            "capabilities"
+          ]
+        },
+        "annotations": {
+          "name": "Receiver"
+        }
+      }
+    ],
+    "flows": [
+      {
+        "id": "messages",
+        "message": "message",
+        "from": {
+          "cell": "sender",
+          "port": "messages"
+        },
+        "to": [
+          {
+            "cell": "receiver",
+            "port": "messages"
+          }
+        ],
+        "contract": {
+          "delivery": "at_most_once",
+          "ordering": {
+            "scope": "key",
+            "key": "$.id"
+          },
+          "capacity": 256,
+          "deadline": "5ms",
+          "durability": "memory",
+          "on_unavailable": "fail",
+          "transport": {
+            "prefer": [
+              "shared-memory",
+              "quic"
+            ]
+          }
+        }
+      }
+    ],
+    "policies": [
+      {
+        "id": "no-authority-expansion",
+        "scope": [
+          "sender",
+          "receiver"
+        ],
+        "predicate": "candidate.capabilities <= parent.capabilities",
+        "authority": "promote"
+      }
+    ]
+  },
+  "entrypoints": [
+    {
+      "cell": "sender",
+      "event": "start",
+      "deployable": false
+    }
+  ],
+  "annotations": {
+    "title": "Hello flow with typed implementation holes",
+    "note": "This graph is intentionally incomplete and therefore not deployable."
+  }
+}

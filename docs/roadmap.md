@@ -17,22 +17,24 @@ Eve should advance by falsifiable prototypes, not by designing a large language 
 
 **Goal:** validate semantics before inventing source syntax.
 
-- Define a versioned schema for nodes, cells, streams, effects, capabilities, and placement constraints.
+- Define a versioned graph schema for cells, flows, effects, capabilities, typed holes, and placement constraints.
 - Build a validator and canonical serializer.
+- Implement content identity, graph queries, and transactional structural patches.
+- Prove through fixtures that renames, formatting, and projection order do not change semantic identity.
 - Produce execution plans for local processes and a small multi-server testbed.
 - Use existing transports; begin with shared memory and QUIC or TCP.
 - Add deterministic fault injection and causal traces.
 
-**Exit criterion:** one IR program runs unchanged on a laptop simulation and a multi-node deployment, with explainable plan differences.
+**Exit criterion:** one graph runs unchanged on a laptop simulation and a multi-node deployment, with explainable plan differences; a typed hole can be queried and filled without text rewriting.
 
 ## Phase 2 — Minimal Eve front end
 
 **Goal:** test whether a purpose-built language materially improves authorship and static checking.
 
-- Implement the smallest parser, formatter, type/effect checker, and structured diagnostics.
+- Implement the smallest text projection, parser/importer, formatter, type/effect checker, and structured diagnostics.
 - Support cells, streams, schemas, placement constraints, deadlines, and capabilities.
 - Provide a Rust or Python embedding API.
-- Compare model-generated structural edits with equivalent edits in conventional infrastructure code.
+- Compare model-generated graph transactions with text edits and equivalent changes in conventional infrastructure code.
 
 **Exit criterion:** Eve prevents meaningful distributed failures before deployment and reduces the amount of workload-specific orchestration code.
 

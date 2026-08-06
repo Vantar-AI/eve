@@ -3,13 +3,15 @@
 Eve is proposed as a language, compiler, runtime, and wire contract. Those components should be separable so the project can reuse proven infrastructure.
 
 ```text
-Eve source
-    │ parse, type/effect check, capability check
+Text · visual editor · AI graph transactions
+    │ parse/project, resolve, type/effect/capability check
     ▼
-Canonical Eve IR
+Canonical semantic Eve Graph
+    ├── History graph: patches, evidence, lineage, promotion
+    │
     │ partition, place, schedule, specialize
     ▼
-Execution plan
+Signed execution plan
     ├── compute backends: native, accelerator DSLs, Nuro, framework interop
     ├── transports: shared memory, QUIC, TCP, RDMA, collective libraries
     ├── storage: local, object, distributed log
@@ -18,12 +20,12 @@ Execution plan
 
 ## Compiler
 
-The compiler should perform progressively lower transformations:
+The compiler and graph store should perform progressively lower transformations:
 
-1. Parse a deliberately small source grammar.
-2. Resolve types, shapes, effects, capabilities, and failure contracts.
-3. Produce canonical Eve IR.
-4. Partition the program into cells and communication edges.
+1. Accept a text import or typed graph transaction against a known content identity.
+2. Resolve types, shapes, effects, capabilities, holes, and failure contracts.
+3. Canonicalize and content-address the semantic Eve Graph.
+4. Partition the graph into cells and communication edges.
 5. Accept a topology and capability inventory from the target environment.
 6. Produce one or more candidate placement and transport plans.
 7. Cost the candidates using latency, bandwidth, memory, energy, and reliability objectives.
@@ -47,7 +49,7 @@ The fast data plane should not route every message through a central coordinator
 
 ## Wire contract
 
-The first Eve wire format should prioritize correctness and measurement over novelty:
+The semantic graph fixes message meaning while an execution plan chooses representation. The first Eve wire format should prioritize correctness and measurement over novelty:
 
 - a small versioned envelope for identity, schema, deadlines, tracing, and capabilities;
 - canonical schema hashes and compatibility rules;
@@ -61,6 +63,8 @@ Existing encodings and transports should be used until a benchmark demonstrates 
 ## Evolution service
 
 Evolution is an optional runtime service, not a privileged escape hatch. It receives candidates, validates them, runs bounded evaluations, records provenance, and asks the policy engine whether promotion is permitted. See [evolution.md](evolution.md).
+
+Candidates arrive as typed patches against an immutable parent graph. The active graph is never rewritten in place.
 
 ## Interoperability
 

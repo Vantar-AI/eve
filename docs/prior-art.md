@@ -4,7 +4,10 @@ Eve should reuse existing work and earn every new abstraction. No single compari
 
 | Area | Examples | What Eve should learn or reuse | Intended difference |
 |---|---|---|---|
+| Content-addressed languages | Unison | Definitions identified by syntax-tree content; names as metadata | Extend content identity across distributed contracts, plans, and evolutionary history |
+| Structural/live programming | Hazel/Hazelnut | Typed holes, meaningful incomplete programs, typed edit actions | Make structural editing native to AI-authored distributed graphs |
 | Fault-tolerant actors | Erlang/OTP, Pony, Orleans | Supervision, isolation, messaging, capabilities | Tensor-aware placement, data movement, and evolutionary contracts |
+| Protocol languages | P | Asynchronous state machines and systematic distributed-protocol testing | Integrate protocol behavior with placement, resources, content identity, and evolution |
 | Distributed/HPC languages | Chapel, Legion, Regent, MPI | Locality, partitioning, collectives, performance models | AI-specific types plus persistent, changing service graphs |
 | AI compiler IRs | MLIR, StableHLO, IREE | Progressive lowering and hardware portability | Communication, deployment, failure, and evolution as program semantics |
 | AI distribution | PyTorch DTensor, JAX sharding, XLA SPMD | Logical tensors, meshes, automatic collective insertion | Extend beyond one model graph into the surrounding server system |
@@ -14,6 +17,7 @@ Eve should reuse existing work and earn every new abstraction. No single compari
 | Service orchestration | Kubernetes, Nomad | Resource inventory, isolation, lifecycle management | Semantic knowledge of models, tensors, streams, and evaluation gates |
 | Programmable networks | P4, eBPF | Safe specialization close to the data plane | An optional lowering target rather than the application language itself |
 | Agent protocols | MCP, A2A | Capability discovery and higher-level interoperability | Eve targets execution and data movement inside distributed AI systems |
+| Equality graphs | egg, egglog | Represent many equivalent programs and extract by cost | Separate proved/validated optimization from behavior-changing evolution |
 
 ## The proposed gap
 
@@ -30,6 +34,10 @@ If this combination can be expressed cleanly as libraries and configuration in a
 ## Starting references
 
 - [MLIR](https://mlir.llvm.org/)
+- [Unison's content-addressed code](https://www.unison-lang.org/docs/the-big-idea/)
+- [Hazel typed-hole environment](https://hazel.org/)
+- [P language semantics](https://p-org.github.io/P/advanced/psemantics/)
+- [egg equality saturation](https://egraphs-good.github.io/egg/egg/tutorials/_01_background/)
 - [StableHLO](https://openxla.org/stablehlo/)
 - [IREE](https://iree.dev/)
 - [MPI Forum](https://www.mpi-forum.org/)

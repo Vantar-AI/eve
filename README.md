@@ -4,9 +4,9 @@
 
 **A server-native language for evolving intelligence.**
 
-Describe distributed AI systems once. Compile computation, communication, placement, and evolution into one executable plan.
+**The graph is the program.** Compile computation, communication, placement, and evolution into one executable plan.
 
-[Vision](docs/vision.md) · [Design](docs/design.md) · [Architecture](docs/architecture.md) · [Illustrative syntax](docs/language.md) · [Roadmap](docs/roadmap.md)
+[RFC-0001](rfcs/0001-eve-language-kernel.md) · [Vision](docs/vision.md) · [Design](docs/design.md) · [Architecture](docs/architecture.md) · [Text projection](docs/language.md) · [Roadmap](docs/roadmap.md)
 
 </div>
 
@@ -18,6 +18,22 @@ Describe distributed AI systems once. Compile computation, communication, placem
 AI software is becoming distributed, persistent, and increasingly authored by other software. Its unit of execution is no longer a process on one machine: it is a changing graph of models, tools, memory, accelerators, and services spread across a data center.
 
 Eve explores what a language would look like if that reality were the starting point.
+
+## The radical path
+
+Eve is not fundamentally a collection of source files. Its source of truth is a **typed, content-addressed distributed graph**. Text, visual tools, and conversations are lossless projections and editors of that graph. AI systems operate through typed graph queries and transactions rather than being forced to regenerate files.
+
+```text
+text · visual · AI structural edits
+              ↕
+       canonical Eve Graph
+          ↙     ↓      ↘
+      local   cluster   evolved candidates
+```
+
+Meaning remains stable and inspectable. Compilers and evolutionary systems may synthesize implementations, placements, encodings, and wire protocols behind those contracts. Read the decision in [RFC-0001: The Eve language kernel](rfcs/0001-eve-language-kernel.md).
+
+The following is one possible text projection—not the authoritative representation:
 
 ```eve
 network training {
@@ -58,7 +74,7 @@ This is closer to a language for the data center than a language for an individu
 
 1. **The network is part of the program.** Local and remote operations must not look accidentally identical; their cost and failure semantics stay visible.
 2. **Intent is separate from mechanism.** Programs state constraints. The compiler and runtime choose a transport and execution plan.
-3. **AI-native means regular and inspectable.** Eve favors a small grammar, canonical formatting, a versioned IR, structured diagnostics, and stable semantics over clever syntax.
+3. **AI-native means structural and inspectable.** Eve exposes typed graph queries, transactions, holes, canonical projections, structured diagnostics, and stable semantics.
 4. **Evolution is governed.** Generated variants run inside explicit capabilities, budgets, tests, and promotion rules. Self-modification is never implicit.
 5. **Copying is a decision.** Ownership, tensor layout, locality, and data movement are represented so zero-copy paths can be used safely.
 6. **Failure is typed.** Timeouts, partial delivery, node loss, and retries belong in function and stream contracts.
@@ -85,8 +101,13 @@ docs/
   evolution.md       Governed evolutionary execution
   prior-art.md       Existing systems and Eve's intended gap
   roadmap.md         Validation plan from research to prototype
+rfcs/
+  0001-...md         Graph-native language-kernel proposal
+spec/
+  eve-graph-...json  Experimental machine-readable graph schema
 examples/
   hello.eve          Minimal server-to-server flow
+  hello.evegraph.json  The same idea as a typed incomplete graph
   evolution.eve      Bounded evolutionary loop
 ```
 
@@ -95,6 +116,7 @@ examples/
 The project begins with questions, not predetermined syntax:
 
 - Can placement and communication effects be expressive without becoming infrastructure configuration?
+- Can graph-native editing outperform text generation for people and AI without sacrificing ordinary version control?
 - Which guarantees belong in the language, the IR, or only in a particular runtime?
 - Can an evolutionary system modify a live distributed program while preserving capabilities and invariants?
 - What is the smallest useful prototype that beats a conventional Rust/Python plus RPC implementation?

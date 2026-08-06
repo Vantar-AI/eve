@@ -2,15 +2,29 @@
 
 This document records the initial semantic direction. It is a hypothesis to test, not a frozen specification.
 
-## One language, three representations
+## The graph is the program
 
-Eve should have three deliberately different representations:
+Eve's authoritative representation is a canonical typed graph. It is not reconstructed from source files every time a tool needs semantic information.
 
-1. **Source language** — concise, regular, and readable by people and models.
-2. **Eve IR** — canonical, typed, versioned, and independent of a particular runtime.
-3. **Execution plan** — topology- and backend-specific instructions produced for a deployment.
+The graph separates three artifacts:
 
-Source syntax may change. IR compatibility and execution semantics require a much higher stability bar.
+1. **Semantic graph** — portable program meaning: types, cells, flows, effects, authority, constraints, and holes.
+2. **Execution plan** — topology- and backend-specific realization of that meaning.
+3. **History graph** — candidate changes, evidence, approvals, rollout, and lineage.
+
+Text, visual canvases, and AI operations are projections and editors. They must preserve the semantic identity of unchanged graph content. See [RFC-0001](../rfcs/0001-eve-language-kernel.md).
+
+## Identity
+
+Names are mutable metadata. Immutable definitions and semantic modules are identified by hashes of canonical content. Runtime instances and governed release slots have separate identities.
+
+This means a rename does not rebuild dependents, while a behavioral change always creates new content with traceable lineage.
+
+## Typed holes
+
+Incomplete programs have meaning. A typed hole records the interface it must satisfy, bindings in scope, allowed effects and failures, capability ceiling, resource budget, and outstanding obligations.
+
+AI systems should normally receive a relevant graph slice plus one or more holes. Filling a hole is a typed graph transaction; it cannot silently expand authority or weaken the enclosing contract.
 
 ## Core semantic objects
 
@@ -72,6 +86,8 @@ The language needs to distinguish:
 
 The source language should express intent. The execution plan records exact buffers, transfers, and synchronization.
 
+Here, “source language” means any authoring projection. The canonical semantic graph remains authoritative.
+
 ## Failure
 
 Remote execution introduces failure that a normal function call does not have. Eve must avoid hiding that fact.
@@ -101,7 +117,7 @@ Code evolution never expands authority automatically. A candidate requiring a ne
 
 A proposed feature should answer four questions:
 
-1. What source-level problem does it solve?
+1. What authoring or semantic problem does it solve?
 2. What exact IR semantics does it introduce?
 3. How can a runtime implement it on existing infrastructure?
 4. What benchmark or failure test proves its value?

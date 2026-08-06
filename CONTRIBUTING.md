@@ -10,6 +10,7 @@ Eve is currently a documentation-first research project. Contributions should ma
 - A comparison with prior work that changes or narrows Eve's direction.
 - A benchmark design with a conventional baseline.
 - A security analysis of generated or evolutionary programs.
+- A typed graph operation, canonicalization fixture, or projection round-trip case.
 
 ## Proposal format
 
@@ -23,6 +24,8 @@ Open an issue or pull request covering:
 6. Measurement or acceptance criterion.
 
 Syntax without semantics is considered a sketch, not a language proposal.
+
+Changes to portable semantics should use the [RFC process](rfcs/README.md). RFC-0001 establishes the current graph-native direction but remains a Draft that implementation evidence may revise.
 
 ## Documentation style
 

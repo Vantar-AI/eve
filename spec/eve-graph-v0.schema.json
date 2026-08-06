@@ -1,0 +1,973 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Vantar-AI/eve/blob/main/spec/eve-graph-v0.schema.json",
+  "title": "Eve Graph v0 experimental interchange",
+  "description": "An unstable interchange format for the graph-native Eve language kernel.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eve_graph",
+    "module",
+    "definitions",
+    "entrypoints"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "eve_graph": {
+      "const": "0.1.0"
+    },
+    "module": {
+      "$ref": "#/$defs/module"
+    },
+    "definitions": {
+      "$ref": "#/$defs/definitions"
+    },
+    "entrypoints": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entrypoint"
+      }
+    },
+    "identity": {
+      "$ref": "#/$defs/contentIdentity"
+    },
+    "annotations": {
+      "$ref": "#/$defs/annotations"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$"
+    },
+    "typeRef": {
+      "type": "string",
+      "minLength": 1
+    },
+    "duration": {
+      "type": "string",
+      "pattern": "^[0-9]+(ns|us|ms|s|m|h)$"
+    },
+    "annotations": {
+      "description": "Non-semantic metadata excluded from content identity.",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "semantic_version": {
+          "type": "string"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/contentIdentity"
+          }
+        }
+      }
+    },
+    "contentIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "canonicalization",
+        "digest"
+      ],
+      "properties": {
+        "algorithm": {
+          "enum": [
+            "blake3",
+            "sha256"
+          ]
+        },
+        "canonicalization": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]+$"
+        }
+      }
+    },
+    "definitions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "types",
+        "capabilities",
+        "cells",
+        "flows",
+        "policies"
+      ],
+      "properties": {
+        "types": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/typeDefinition"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          }
+        },
+        "cells": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/cell"
+          }
+        },
+        "flows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/flow"
+          }
+        },
+        "policies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/policy"
+          }
+        }
+      }
+    },
+    "typeDefinition": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/scalarType"
+        },
+        {
+          "$ref": "#/$defs/recordType"
+        },
+        {
+          "$ref": "#/$defs/variantType"
+        },
+        {
+          "$ref": "#/$defs/sequenceType"
+        },
+        {
+          "$ref": "#/$defs/tensorType"
+        },
+        {
+          "$ref": "#/$defs/resultType"
+        },
+        {
+          "$ref": "#/$defs/contentRefType"
+        }
+      ]
+    },
+    "typeHeader": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "scalarType": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/typeHeader"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "kind",
+            "scalar"
+          ],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/id"
+            },
+            "kind": {
+              "const": "scalar"
+            },
+            "scalar": {
+              "enum": [
+                "bool",
+                "i8",
+                "i16",
+                "i32",
+                "i64",
+                "u8",
+                "u16",
+                "u32",
+                "u64",
+                "u128",
+                "f16",
+                "bf16",
+                "f32",
+                "f64",
+                "string",
+                "bytes"
+              ]
+            },
+            "annotations": {
+              "$ref": "#/$defs/annotations"
+            }
+          }
+        }
+      ]
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "type"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "$ref": "#/$defs/typeRef"
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "recordType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "fields"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "variantCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "payload": {
+          "$ref": "#/$defs/typeRef"
+        }
+      }
+    },
+    "variantType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "cases"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "variant"
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/variantCase"
+          }
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "sequenceType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "element"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "sequence"
+        },
+        "element": {
+          "$ref": "#/$defs/typeRef"
+        },
+        "max_length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "tensorType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "element",
+        "shape"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "tensor"
+        },
+        "element": {
+          "$ref": "#/$defs/typeRef"
+        },
+        "shape": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "$ref": "#/$defs/id"
+              }
+            ]
+          }
+        },
+        "layout": {
+          "type": "string"
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "resultType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ok",
+        "failures"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "result"
+        },
+        "ok": {
+          "$ref": "#/$defs/typeRef"
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "contentRefType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "target"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "const": "content_ref"
+        },
+        "target": {
+          "type": "string"
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "resource",
+        "permissions"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "resource": {
+          "type": "string"
+        },
+        "permissions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "delegation": {
+          "enum": [
+            "none",
+            "attenuate"
+          ],
+          "default": "none"
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "direction",
+        "message"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "direction": {
+          "enum": [
+            "in",
+            "out"
+          ]
+        },
+        "message": {
+          "$ref": "#/$defs/typeRef"
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "implementation": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/holeImplementation"
+        },
+        {
+          "$ref": "#/$defs/externalImplementation"
+        },
+        {
+          "$ref": "#/$defs/intrinsicImplementation"
+        }
+      ]
+    },
+    "holeImplementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "hole"
+      ],
+      "properties": {
+        "kind": {
+          "const": "hole"
+        },
+        "hole": {
+          "$ref": "#/$defs/hole"
+        }
+      }
+    },
+    "externalImplementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "content",
+        "entry"
+      ],
+      "properties": {
+        "kind": {
+          "const": "external"
+        },
+        "content": {
+          "$ref": "#/$defs/contentIdentity"
+        },
+        "entry": {
+          "type": "string"
+        }
+      }
+    },
+    "intrinsicImplementation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "name"
+      ],
+      "properties": {
+        "kind": {
+          "const": "intrinsic"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "hole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "expected",
+        "effect_ceiling",
+        "capability_ceiling"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "expected": {
+          "type": "string"
+        },
+        "bindings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/field"
+          }
+        },
+        "effect_ceiling": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "failure_ceiling": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "capability_ceiling": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "obligations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "integer",
+            "minimum": 0
+          },
+          {
+            "type": "number",
+            "minimum": 0
+          },
+          {
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requires": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "prefers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "region": {
+          "type": "string"
+        },
+        "replicas": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "evolutionBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "fixed",
+            "implementation",
+            "subgraph"
+          ]
+        },
+        "preserve": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "ports",
+              "effects",
+              "failures",
+              "capabilities",
+              "state",
+              "policies"
+            ]
+          }
+        }
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "ports",
+        "implementation",
+        "effects",
+        "failures",
+        "requires",
+        "concurrency",
+        "evolution"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "state": {
+          "$ref": "#/$defs/typeRef"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        },
+        "implementation": {
+          "$ref": "#/$defs/implementation"
+        },
+        "effects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "requires": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "placement": {
+          "$ref": "#/$defs/placement"
+        },
+        "concurrency": {
+          "enum": [
+            "serial",
+            "stateless",
+            "partitioned"
+          ]
+        },
+        "evolution": {
+          "$ref": "#/$defs/evolutionBoundary"
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cell",
+        "port"
+      ],
+      "properties": {
+        "cell": {
+          "$ref": "#/$defs/id"
+        },
+        "port": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "ordering": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope"
+      ],
+      "properties": {
+        "scope": {
+          "enum": [
+            "none",
+            "flow",
+            "key",
+            "causal"
+          ]
+        },
+        "key": {
+          "type": "string"
+        }
+      }
+    },
+    "flowContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "delivery",
+        "ordering",
+        "capacity",
+        "on_unavailable"
+      ],
+      "properties": {
+        "delivery": {
+          "enum": [
+            "best_effort",
+            "at_most_once",
+            "at_least_once",
+            "transactional"
+          ]
+        },
+        "ordering": {
+          "$ref": "#/$defs/ordering"
+        },
+        "capacity": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "deadline": {
+          "$ref": "#/$defs/duration"
+        },
+        "durability": {
+          "enum": [
+            "memory",
+            "process",
+            "node",
+            "region"
+          ]
+        },
+        "on_unavailable": {
+          "enum": [
+            "drop",
+            "fail",
+            "retry",
+            "buffer"
+          ]
+        },
+        "transport": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "require": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "prefer": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "message",
+        "from",
+        "to",
+        "contract"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "message": {
+          "$ref": "#/$defs/typeRef"
+        },
+        "from": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "to": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/endpoint"
+          }
+        },
+        "contract": {
+          "$ref": "#/$defs/flowContract"
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "scope",
+        "predicate",
+        "authority"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "predicate": {
+          "type": "string"
+        },
+        "authority": {
+          "enum": [
+            "advisory",
+            "compile",
+            "deploy",
+            "promote"
+          ]
+        },
+        "annotations": {
+          "$ref": "#/$defs/annotations"
+        }
+      }
+    },
+    "entrypoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cell",
+        "event"
+      ],
+      "properties": {
+        "cell": {
+          "$ref": "#/$defs/id"
+        },
+        "event": {
+          "type": "string"
+        },
+        "deployable": {
+          "type": "boolean",
+          "description": "Derived hint only; the Eve checker is authoritative."
+        }
+      }
+    }
+  }
+}

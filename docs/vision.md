@@ -33,9 +33,11 @@ AI models can generate existing languages. A language does not become AI-native 
 
 For Eve, AI-native means:
 
-- one canonical representation for every valid program;
+- a canonical typed graph as the program, with text and visual projections;
+- content identity independent of human names and formatting;
 - a compact and regular grammar with few context-dependent rules;
 - an AST and typed IR available as first-class compiler APIs;
+- structural graph transactions and meaningful typed holes;
 - machine-readable diagnostics with causal traces and suggested repairs;
 - explicit capabilities and resource budgets for generated code;
 - inexpensive validation, simulation, and differential testing;
@@ -43,6 +45,8 @@ For Eve, AI-native means:
 - provenance for generated changes and reproducible promotion decisions.
 
 Human readability remains essential because people must audit the systems that models produce.
+
+Eve therefore does not ask one representation to serve everyone. People may read canonical text or topology views, AI systems may query and patch typed graph slices, and runtimes consume specialized execution plans. All remain anchored to the same portable semantics.
 
 ## The end state
 
