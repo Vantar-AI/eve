@@ -91,7 +91,12 @@ Conversation v0 JSON
     → representation and semantic validation
     → global conversation state graph
     → client endpoint machine + server endpoint machine
-    → semantic Eve Wire trace validation
+    → independent endpoint execution
+       ├── memory plan
+       └── length-delimited TCP plan
+    → equivalent semantic trace identities
 ```
 
-It does not yet execute endpoint machines over a transport. That boundary is deliberate: projection and state validation must be correct before networking adds concurrency and failure.
+Each endpoint checks the conversation name, experimental semantic hash, expected state, and sequence before accepting a frame. The memory and TCP plans serialize the same versioned Eve Wire envelope. The reference `Generate` workload completes normally or through the cancellation branch without transport-specific application logic.
+
+This runtime remains an experiment rather than a deployment substrate. It is blocking, supports two static roles, sends JSON payloads, and does not yet implement authentication, encryption, flow control, structural payload validation from Eve type definitions, deadline enforcement, recovery, or transport negotiation. The TCP plan deliberately establishes the semantic baseline before a QUIC plan adds secure multiplexed transport behavior.

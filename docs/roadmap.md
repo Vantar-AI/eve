@@ -29,6 +29,8 @@ Eve should advance by falsifiable prototypes, not by designing a large language 
 
 **Exit criterion:** one conversation graph projects into compatible endpoints and runs unchanged on a laptop simulation and a multi-node deployment, with explainable plan differences; a typed hole can be queried and filled without text rewriting.
 
+**Current evidence:** the request/token/cancel graph now runs through projected endpoints using an in-process memory plan and a loopback TCP plan. The CLI also runs the roles as separate processes, and both report the same semantic conversation and trace identities. Multi-node execution, QUIC, fault injection, typed structural patches, and benchmarking remain open.
+
 ## Phase 2 — Minimal Eve front end
 
 **Goal:** test whether a purpose-built language materially improves authorship and static checking.

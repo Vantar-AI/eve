@@ -4,6 +4,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use thiserror::Error;
 
+pub mod runtime;
+
 pub const CONVERSATION_FORMAT: &str = "0.1.0";
 pub const ENDPOINT_FORMAT: &str = "0.1.0";
 
@@ -564,13 +566,15 @@ fn project_state(state: &GlobalState, role: &str) -> EndpointState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "op", rename_all = "snake_case")]
 pub enum Frame {
     Data {
         from: String,
         to: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<Value>,
     },
     Select {
         by: String,
@@ -628,6 +632,7 @@ pub fn verify_trace(
                     from: actual_from,
                     to: actual_to,
                     message: actual_message,
+                    ..
                 },
             ) if from == actual_from && to == actual_to && message == actual_message => next,
             (
@@ -669,9 +674,11 @@ pub fn verify_trace(
     })
 }
 
-fn describe_frame(frame: &Frame) -> String {
+pub fn describe_frame(frame: &Frame) -> String {
     match frame {
-        Frame::Data { from, to, message } => format!("data {from} -> {to}: {message}"),
+        Frame::Data {
+            from, to, message, ..
+        } => format!("data {from} -> {to}: {message}"),
         Frame::Select { by, label } => format!("select by {by}: {label}"),
         Frame::Cancel { from, to, scope } => format!("cancel {from} -> {to}: {scope}"),
     }

@@ -371,7 +371,7 @@ Mobility and protocol evolution remain in the semantics so v0 choices do not mak
 
 ### Prototype status
 
-The initial Rust prototype implements the two-role subset with typed sends, choices, cyclic continuations, cancellation, terminal states, endpoint projection, and offline frame-trace validation. It has no network runtime yet. The executable example and deliberately invalid trace live under `examples/`.
+The initial Rust prototype implements the two-role subset with typed transitions, choices, cyclic continuations, cancellation, terminal states, endpoint projection, and offline frame-trace validation. Projected endpoints now execute the same request/token/cancel graph through an in-process memory plan or a length-delimited TCP plan, including as separate client and server processes. Every envelope binds the experimental semantic conversation hash, state, and sequence. This is a correctness reference runtime, not yet an authenticated, encrypted, asynchronous, or optimized network runtime.
 
 ## Acceptance criteria
 
