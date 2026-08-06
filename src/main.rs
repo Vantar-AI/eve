@@ -1,7 +1,8 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use eve::benchmark::run_reference_benchmark;
 use eve::runtime::{
-    QuicListener, QuicTransport, TcpTransport, run_generate_client, run_generate_server,
-    run_memory_demo, run_quic_demo, run_tcp_demo,
+    FaultOperation, FaultPlan, QuicListener, QuicTransport, TcpTransport, run_generate_client,
+    run_generate_server, run_memory_demo, run_memory_fault_demo, run_quic_demo, run_tcp_demo,
 };
 use eve::{Conversation, Frame, project, validate, verify_trace};
 use serde::de::DeserializeOwned;
@@ -57,6 +58,44 @@ enum Command {
         /// Ask the client to cancel after receiving this many tokens.
         #[arg(long)]
         cancel_after: Option<usize>,
+    },
+    /// Run the memory transport with one deterministic typed transport failure.
+    FaultDemo {
+        #[arg(default_value = "examples/generate.eveconv.json")]
+        conversation: PathBuf,
+        #[arg(long, default_value = "Exercise typed transport failure.")]
+        prompt: String,
+        /// Maximum number of tokens the reference server will attempt to emit.
+        #[arg(long, default_value_t = 5)]
+        tokens: usize,
+        /// Ask the client to cancel after receiving this many tokens.
+        #[arg(long)]
+        cancel_after: Option<usize>,
+        /// Endpoint whose transport operation should fail.
+        #[arg(long, default_value = "server")]
+        fault_role: String,
+        /// Transport operation whose selected occurrence should fail.
+        #[arg(long, value_enum, default_value_t = FaultOperationArg::Send)]
+        fault_operation: FaultOperationArg,
+        /// One-based occurrence of the selected operation to fail.
+        #[arg(long, default_value_t = 2)]
+        fault_at: usize,
+        /// Declared Eve failure ID to observe.
+        #[arg(long, default_value = "transport.closed")]
+        failure: String,
+    },
+    /// Compare the Eve reference memory runtime with a hand-written JSON baseline.
+    Benchmark {
+        #[arg(default_value = "examples/generate.eveconv.json")]
+        conversation: PathBuf,
+        #[arg(long, default_value = "Measure the conversation runtime.")]
+        prompt: String,
+        #[arg(long, default_value_t = 3)]
+        tokens: usize,
+        #[arg(long, default_value_t = 200)]
+        iterations: usize,
+        #[arg(long, default_value_t = 20)]
+        warmup: usize,
     },
     /// Serve one projected endpoint over TCP and exit after one conversation.
     Serve {
@@ -118,6 +157,21 @@ enum DemoTransport {
     Quic,
 }
 
+#[derive(Clone, Debug, ValueEnum)]
+enum FaultOperationArg {
+    Send,
+    Receive,
+}
+
+impl From<FaultOperationArg> for FaultOperation {
+    fn from(operation: FaultOperationArg) -> Self {
+        match operation {
+            FaultOperationArg::Send => Self::Send,
+            FaultOperationArg::Receive => Self::Receive,
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
@@ -175,6 +229,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 DemoTransport::Tcp => run_tcp_demo(&conversation, &prompt, tokens, cancel_after)?,
                 DemoTransport::Quic => run_quic_demo(&conversation, &prompt, tokens, cancel_after)?,
             };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::FaultDemo {
+            conversation,
+            prompt,
+            tokens,
+            cancel_after,
+            fault_role,
+            fault_operation,
+            fault_at,
+            failure,
+        } => {
+            let conversation: Conversation = read_json(&conversation)?;
+            let report = run_memory_fault_demo(
+                &conversation,
+                &prompt,
+                tokens,
+                cancel_after,
+                FaultPlan {
+                    role: fault_role,
+                    operation: fault_operation.into(),
+                    occurrence: fault_at,
+                    failure,
+                },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::Benchmark {
+            conversation,
+            prompt,
+            tokens,
+            iterations,
+            warmup,
+        } => {
+            let conversation: Conversation = read_json(&conversation)?;
+            let report =
+                run_reference_benchmark(&conversation, &prompt, tokens, iterations, warmup)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Serve {

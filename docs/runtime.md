@@ -71,7 +71,38 @@ The generated private key remains in the server process. The public certificate 
 
 After the Eve conversation reaches `end`, the QUIC plan performs a role-ordered close handshake outside the semantic trace. This ensures each process observes the peer's completion before either endpoint releases its QUIC connection.
 
-Each report includes a semantic trace hash. Equivalent client and server hashes mean both independently projected endpoints observed the same ordered protocol transitions. Tests also require memory, TCP, and QUIC to produce the same hash for identical inputs.
+Each report includes a semantic trace hash. Equivalent client and server hashes mean both independently projected endpoints observed the same ordered protocol transitions. Tests also require memory, TCP, and QUIC to produce the same hash for identical successful inputs.
+
+## Typed failure and deterministic faults
+
+Conversation v0 declares failure IDs separately from states. A communication state maps an applicable failure ID to a terminal `fail` state. The v0 checker rejects an unknown failure ID or an edge whose target does not terminate with that same failure. Recovery and retry transitions are intentionally deferred; this slice first makes failure meaning explicit.
+
+The reference runtime maps memory/TCP closure and QUIC errors to `transport.closed`. A local endpoint follows the projected failure edge and records a semantic `FAULT` observation instead of leaking the transport error directly to application code.
+
+The memory fault plan makes this behavior reproducible. It fails one exact transport operation selected by endpoint role, `send` or `receive`, and a one-based occurrence:
+
+```bash
+cargo run -- fault-demo --fault-role server \
+  --fault-operation send --fault-at 2 \
+  --failure transport.closed
+```
+
+Injecting the server's second send closes both channel directions. Both endpoints reach `transport-failed` with the same typed outcome. Their trace hashes differ because each trace honestly records its own observer on the `FAULT` operation. Reports therefore distinguish `semantic_trace_equivalent` from `outcome_equivalent`.
+
+The report includes the exact fault plan. The command fails if the selected occurrence is never reached, preventing a silent successful run from masquerading as an injected counterexample.
+
+This does not solve distributed agreement. A real partition can prevent one role from learning why its peer disappeared. The current two-thread injector models simultaneous local closure so the failure semantics can be checked deterministically; uncertainty states, deadlines, recovery, and partial delivery remain future work.
+
+## Reference benchmark
+
+The `benchmark` command compares the whole Eve memory path with a hand-written request/token/done protocol using the same basic threads, channels, and JSON boundary. It currently exposes rather than hides the cost of the reference machinery:
+
+```bash
+cargo run --release --locked -- benchmark \
+  --iterations 200 --warmup 20 --tokens 3
+```
+
+See [the benchmark protocol, initial result, and limitations](benchmark.md).
 
 ## Security and correctness boundary
 
@@ -82,6 +113,8 @@ The prototype currently guarantees only:
 - exact state and sequence agreement;
 - a maximum envelope size;
 - explicit selection and cancellation transitions;
+- declared terminal transport-failure transitions;
+- deterministic role/operation/occurrence fault injection;
 - equivalent semantic traces across all three implemented plans;
 - QUIC transport encryption and pinned server authentication;
 - rejection of a QUIC server presenting an untrusted certificate.
@@ -90,7 +123,7 @@ It does not yet provide:
 
 - persistent server identity, client authentication, or authorization;
 - asynchronous multiplexing or flow control;
-- retries, reconnects, or failure branches;
+- retries, reconnects, recovery branches, or distributed failure agreement;
 - enforcement of declared deadlines;
 - structural validation of payloads from Eve type definitions;
 - canonical graph normalization;
@@ -99,13 +132,13 @@ It does not yet provide:
 
 The TCP server listens on loopback by default because that wire plan is plaintext and unauthenticated. QUIC is encrypted, but its generated certificate is suitable only for this explicit pinning experiment.
 
-## QUIC result and next experiment
+## Current result and next experiment
 
-The first two QUIC criteria now pass: memory, TCP, and QUIC preserve the same semantic trace, and QUIC authenticates the server while encrypting transport data. A wrong pinned certificate is rejected.
+Memory, TCP, and QUIC preserve the same successful semantic trace, and QUIC authenticates the server while encrypting transport data. A wrong pinned certificate is rejected. Transport closure can now reach a declared terminal failure, and a deterministic injector covers that path. A first conventional-baseline benchmark also makes the unoptimized reference overhead explicit.
 
 The next runtime experiment should:
 
-1. Map QUIC stream resets and connection loss into explicit Eve cancellation or failure branches.
-2. Add deterministic network fault injection.
+1. Distinguish timeout, reset, unreachable, and uncertain failures instead of mapping all transport errors to `transport.closed`.
+2. Compile and cache endpoint machines outside the conversation hot path.
 3. Measure protocol-machine, serialization, handshake, and transport overhead separately.
-4. Compare the three plans with a conventional hand-written baseline.
+4. Exercise the same faults and baseline across independent processes and a controlled multi-node testbed.

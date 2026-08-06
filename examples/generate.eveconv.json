@@ -45,6 +45,13 @@
       ]
     }
   ],
+  "failures": [
+    {
+      "id": "transport.closed",
+      "description": "The selected transport closed before the conversation completed.",
+      "retryable": false
+    }
+  ],
   "initial": "start",
   "states": [
     {
@@ -54,7 +61,10 @@
       "to": "server",
       "message": "prompt",
       "deadline": "20ms",
-      "next": "decide"
+      "next": "decide",
+      "on_failure": {
+        "transport.closed": "transport-failed"
+      }
     },
     {
       "kind": "choice",
@@ -63,6 +73,9 @@
       "branches": {
         "token": "emit-token",
         "done": "end"
+      },
+      "on_failure": {
+        "transport.closed": "transport-failed"
       }
     },
     {
@@ -71,7 +84,10 @@
       "from": "server",
       "to": "client",
       "message": "token",
-      "next": "client-action"
+      "next": "client-action",
+      "on_failure": {
+        "transport.closed": "transport-failed"
+      }
     },
     {
       "kind": "choice",
@@ -80,6 +96,9 @@
       "branches": {
         "continue": "decide",
         "cancel": "cancel"
+      },
+      "on_failure": {
+        "transport.closed": "transport-failed"
       }
     },
     {
@@ -88,11 +107,19 @@
       "from": "client",
       "to": "server",
       "scope": "generation",
-      "next": "end"
+      "next": "end",
+      "on_failure": {
+        "transport.closed": "transport-failed"
+      }
     },
     {
       "kind": "end",
       "id": "end"
+    },
+    {
+      "kind": "fail",
+      "id": "transport-failed",
+      "failure": "transport.closed"
     }
   ],
   "annotations": {

@@ -6,9 +6,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::{
     Arc,
+    atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
 };
 use std::time::Duration;
@@ -84,6 +85,23 @@ pub enum RuntimeError {
     WorkerPanicked,
     #[error("QUIC transport error: {0}")]
     Quic(String),
+    #[error("injected failure {failure} for {role} on {operation} operation {occurrence}")]
+    InjectedFailure {
+        role: String,
+        operation: &'static str,
+        occurrence: usize,
+        failure: String,
+    },
+}
+
+impl RuntimeError {
+    fn transport_failure(&self) -> Option<&str> {
+        match self {
+            Self::Io(_) | Self::TransportClosed(_) | Self::Quic(_) => Some("transport.closed"),
+            Self::InjectedFailure { failure, .. } => Some(failure),
+            _ => None,
+        }
+    }
 }
 
 pub fn conversation_identity(conversation: &Conversation) -> Result<String, RuntimeError> {
@@ -146,7 +164,52 @@ impl EndpointMachine {
     }
 
     pub fn is_complete(&self) -> bool {
+        matches!(
+            self.state(),
+            EndpointState::End { .. } | EndpointState::Fail { .. }
+        )
+    }
+
+    pub fn is_successful(&self) -> bool {
         matches!(self.state(), EndpointState::End { .. })
+    }
+
+    pub fn failure(&self) -> Option<&str> {
+        match self.state() {
+            EndpointState::Fail { failure, .. } => Some(failure),
+            _ => None,
+        }
+    }
+
+    pub fn observe_failure(&mut self, failure: &str) -> Result<Frame, RuntimeError> {
+        let state = self.current.clone();
+        self.observe_failure_at(&state, failure)
+    }
+
+    fn observe_failure_at(&mut self, state_id: &str, failure: &str) -> Result<Frame, RuntimeError> {
+        let was_current = self.current == state_id;
+        let state = self
+            .endpoint
+            .states
+            .iter()
+            .find(|state| state.id() == state_id)
+            .expect("a projected endpoint contains every validated state");
+        let next = state
+            .failure_target(failure)
+            .ok_or_else(|| RuntimeError::Protocol {
+                role: self.role().to_string(),
+                state: state_id.to_string(),
+                action: "observe failure",
+                detail: format!("failure {failure} is not declared at this state"),
+            })?;
+        self.current = next.to_string();
+        if was_current {
+            self.sequence += 1;
+        }
+        Ok(Frame::Fault {
+            observer: self.role().to_string(),
+            failure: failure.to_string(),
+        })
     }
 
     pub fn emit_data(&mut self, payload: Value) -> Result<WireEnvelope, RuntimeError> {
@@ -330,11 +393,132 @@ pub trait Transport {
     fn finish(&mut self, _role: &str) -> Result<(), RuntimeError> {
         Ok(())
     }
+    fn abort(&mut self) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FaultOperation {
+    Send,
+    Receive,
+}
+
+impl FaultOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Send => "send",
+            Self::Receive => "receive",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaultPlan {
+    pub role: String,
+    pub operation: FaultOperation,
+    pub occurrence: usize,
+    pub failure: String,
+}
+
+pub struct FaultInjectingTransport<T> {
+    inner: T,
+    role: String,
+    plan: FaultPlan,
+    sends: usize,
+    receives: usize,
+    fired: Arc<AtomicBool>,
+}
+
+impl<T> FaultInjectingTransport<T> {
+    pub fn new(inner: T, role: &str, plan: FaultPlan) -> Result<Self, RuntimeError> {
+        if plan.occurrence == 0 {
+            return Err(RuntimeError::Application(
+                "fault occurrence must be at least one".to_string(),
+            ));
+        }
+        Ok(Self {
+            inner,
+            role: role.to_string(),
+            plan,
+            sends: 0,
+            receives: 0,
+            fired: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    pub fn fired(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.fired)
+    }
+
+    fn should_inject(&mut self, operation: FaultOperation) -> bool {
+        let occurrence = match operation {
+            FaultOperation::Send => {
+                self.sends += 1;
+                self.sends
+            }
+            FaultOperation::Receive => {
+                self.receives += 1;
+                self.receives
+            }
+        };
+        let should_inject = !self.fired.load(Ordering::Relaxed)
+            && self.role == self.plan.role
+            && operation == self.plan.operation
+            && occurrence == self.plan.occurrence;
+        if should_inject {
+            self.fired.store(true, Ordering::Relaxed);
+        }
+        should_inject
+    }
+
+    fn injected_error(&self, operation: FaultOperation) -> RuntimeError {
+        let occurrence = match operation {
+            FaultOperation::Send => self.sends,
+            FaultOperation::Receive => self.receives,
+        };
+        RuntimeError::InjectedFailure {
+            role: self.role.clone(),
+            operation: operation.as_str(),
+            occurrence,
+            failure: self.plan.failure.clone(),
+        }
+    }
+}
+
+impl<T: Transport> Transport for FaultInjectingTransport<T> {
+    fn plan(&self) -> &'static str {
+        self.inner.plan()
+    }
+
+    fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
+        if self.should_inject(FaultOperation::Send) {
+            self.inner.abort();
+            return Err(self.injected_error(FaultOperation::Send));
+        }
+        self.inner.send(envelope)
+    }
+
+    fn receive(&mut self) -> Result<WireEnvelope, RuntimeError> {
+        if self.should_inject(FaultOperation::Receive) {
+            self.inner.abort();
+            return Err(self.injected_error(FaultOperation::Receive));
+        }
+        self.inner.receive()
+    }
+
+    fn finish(&mut self, role: &str) -> Result<(), RuntimeError> {
+        self.inner.finish(role)
+    }
+
+    fn abort(&mut self) {
+        self.inner.abort();
+    }
 }
 
 pub struct MemoryTransport {
-    outbound: Sender<Vec<u8>>,
-    inbound: Receiver<Vec<u8>>,
+    outbound: Option<Sender<Vec<u8>>>,
+    inbound: Option<Receiver<Vec<u8>>>,
 }
 
 pub fn memory_pair() -> (MemoryTransport, MemoryTransport) {
@@ -342,12 +526,12 @@ pub fn memory_pair() -> (MemoryTransport, MemoryTransport) {
     let (server_to_client_tx, server_to_client_rx) = mpsc::channel();
     (
         MemoryTransport {
-            outbound: client_to_server_tx,
-            inbound: server_to_client_rx,
+            outbound: Some(client_to_server_tx),
+            inbound: Some(server_to_client_rx),
         },
         MemoryTransport {
-            outbound: server_to_client_tx,
-            inbound: client_to_server_rx,
+            outbound: Some(server_to_client_tx),
+            inbound: Some(client_to_server_rx),
         },
     )
 }
@@ -360,6 +544,8 @@ impl Transport for MemoryTransport {
     fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
         let encoded = encode_envelope(envelope)?;
         self.outbound
+            .as_ref()
+            .ok_or(RuntimeError::TransportClosed("memory"))?
             .send(encoded)
             .map_err(|_| RuntimeError::TransportClosed("memory"))
     }
@@ -367,9 +553,16 @@ impl Transport for MemoryTransport {
     fn receive(&mut self) -> Result<WireEnvelope, RuntimeError> {
         let encoded = self
             .inbound
+            .as_ref()
+            .ok_or(RuntimeError::TransportClosed("memory"))?
             .recv()
             .map_err(|_| RuntimeError::TransportClosed("memory"))?;
         decode_envelope(&encoded)
+    }
+
+    fn abort(&mut self) {
+        self.outbound.take();
+        self.inbound.take();
     }
 }
 
@@ -420,6 +613,10 @@ impl Transport for TcpTransport {
         let mut encoded = vec![0; length];
         self.stream.read_exact(&mut encoded)?;
         decode_envelope(&encoded)
+    }
+
+    fn abort(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
     }
 }
 
@@ -476,7 +673,7 @@ impl QuicListener {
             .map_err(|error| RuntimeError::Quic(error.to_string()))?;
         Ok(QuicTransport {
             _endpoint: endpoint,
-            _connection: connection,
+            connection,
             send,
             receive,
             finished: false,
@@ -487,7 +684,7 @@ impl QuicListener {
 
 pub struct QuicTransport {
     _endpoint: quinn::Endpoint,
-    _connection: quinn::Connection,
+    connection: quinn::Connection,
     send: quinn::SendStream,
     receive: quinn::RecvStream,
     finished: bool,
@@ -522,7 +719,7 @@ impl QuicTransport {
             .map_err(|error| RuntimeError::Quic(error.to_string()))?;
         Ok(Self {
             _endpoint: endpoint,
-            _connection: connection,
+            connection,
             send,
             receive,
             finished: false,
@@ -618,6 +815,11 @@ impl Transport for QuicTransport {
         self.finished = true;
         Ok(())
     }
+
+    fn abort(&mut self) {
+        self.connection
+            .close(quinn::VarInt::from_u32(1), b"eve typed failure");
+    }
 }
 
 async fn read_quic_close_marker(receive: &mut quinn::RecvStream) -> Result<(), String> {
@@ -669,6 +871,9 @@ pub struct ExecutionReport {
     pub frames: u64,
     pub tokens: Vec<u64>,
     pub completed: bool,
+    pub successful: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
     pub final_state: String,
     #[serde(skip_serializing)]
     pub semantic_trace: Vec<Frame>,
@@ -679,6 +884,9 @@ pub struct DemoReport {
     pub transport_plan: String,
     pub conversation_identity: String,
     pub semantic_trace_equivalent: bool,
+    pub outcome_equivalent: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fault_plan: Option<FaultPlan>,
     pub client: ExecutionReport,
     pub server: ExecutionReport,
 }
@@ -698,26 +906,38 @@ pub fn run_generate_client<T: Transport>(
     let mut machine = EndpointMachine::for_role(conversation, "client")?;
     let prompt = machine.emit_data(json!({ "text": prompt }))?;
     let mut trace = Vec::new();
-    send_and_record(transport, &prompt, &mut trace)?;
     let mut tokens = Vec::new();
+    if !send_and_record(&mut machine, transport, &prompt, &mut trace)? {
+        return Ok(report(&machine, plan, tokens, trace));
+    }
 
-    while !machine.is_complete() {
-        let frame = receive_and_record(&mut machine, transport, &mut trace)?;
+    'conversation: while !machine.is_complete() {
+        let Some(frame) = receive_and_record(&mut machine, transport, &mut trace)? else {
+            break;
+        };
         match frame {
             Frame::Select { label, .. } if label == "done" => {}
             Frame::Select { label, .. } if label == "token" => {
-                let token = receive_and_record(&mut machine, transport, &mut trace)?;
+                let Some(token) = receive_and_record(&mut machine, transport, &mut trace)? else {
+                    break;
+                };
                 let token_id = token_payload(&token)?;
                 tokens.push(token_id);
 
                 if cancel_after.is_some_and(|limit| tokens.len() >= limit) {
                     let selection = machine.emit_select("cancel")?;
-                    send_and_record(transport, &selection, &mut trace)?;
+                    if !send_and_record(&mut machine, transport, &selection, &mut trace)? {
+                        break 'conversation;
+                    }
                     let cancellation = machine.emit_cancel()?;
-                    send_and_record(transport, &cancellation, &mut trace)?;
+                    if !send_and_record(&mut machine, transport, &cancellation, &mut trace)? {
+                        break 'conversation;
+                    }
                 } else {
                     let selection = machine.emit_select("continue")?;
-                    send_and_record(transport, &selection, &mut trace)?;
+                    if !send_and_record(&mut machine, transport, &selection, &mut trace)? {
+                        break 'conversation;
+                    }
                 }
             }
             frame => {
@@ -728,7 +948,9 @@ pub fn run_generate_client<T: Transport>(
         }
     }
 
-    transport.finish(machine.role())?;
+    if machine.is_successful() {
+        transport.finish(machine.role())?;
+    }
     Ok(report(&machine, plan, tokens, trace))
 }
 
@@ -740,28 +962,42 @@ pub fn run_generate_server<T: Transport>(
     let plan = transport.plan().to_string();
     let mut machine = EndpointMachine::for_role(conversation, "server")?;
     let mut trace = Vec::new();
-    let prompt = receive_and_record(&mut machine, transport, &mut trace)?;
+    let Some(prompt) = receive_and_record(&mut machine, transport, &mut trace)? else {
+        return Ok(report(&machine, plan, Vec::new(), trace));
+    };
     prompt_payload(&prompt)?;
     let mut tokens = Vec::new();
 
-    while !machine.is_complete() {
+    'conversation: while !machine.is_complete() {
         if tokens.len() >= token_limit {
             let done = machine.emit_select("done")?;
-            send_and_record(transport, &done, &mut trace)?;
+            if !send_and_record(&mut machine, transport, &done, &mut trace)? {
+                break;
+            }
             continue;
         }
 
         let selection = machine.emit_select("token")?;
-        send_and_record(transport, &selection, &mut trace)?;
+        if !send_and_record(&mut machine, transport, &selection, &mut trace)? {
+            break;
+        }
         let token_id = tokens.len() as u64 + 1;
         let token = machine.emit_data(json!({ "id": token_id }))?;
-        send_and_record(transport, &token, &mut trace)?;
+        if !send_and_record(&mut machine, transport, &token, &mut trace)? {
+            break;
+        }
         tokens.push(token_id);
 
-        match receive_and_record(&mut machine, transport, &mut trace)? {
+        let Some(frame) = receive_and_record(&mut machine, transport, &mut trace)? else {
+            break;
+        };
+        match frame {
             Frame::Select { label, .. } if label == "continue" => {}
             Frame::Select { label, .. } if label == "cancel" => {
-                match receive_and_record(&mut machine, transport, &mut trace)? {
+                let Some(frame) = receive_and_record(&mut machine, transport, &mut trace)? else {
+                    break 'conversation;
+                };
+                match frame {
                     Frame::Cancel { .. } => {}
                     frame => {
                         return Err(RuntimeError::Application(format!(
@@ -778,7 +1014,9 @@ pub fn run_generate_server<T: Transport>(
         }
     }
 
-    transport.finish(machine.role())?;
+    if machine.is_successful() {
+        transport.finish(machine.role())?;
+    }
     Ok(report(&machine, plan, tokens, trace))
 }
 
@@ -813,6 +1051,69 @@ pub fn run_memory_demo(
         Ok::<_, RuntimeError>((client, server))
     })?;
     Ok(demo_report("memory", client, server))
+}
+
+pub fn run_memory_fault_demo(
+    conversation: &Conversation,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+    fault: FaultPlan,
+) -> Result<DemoReport, RuntimeError> {
+    if !conversation.roles.iter().any(|role| role.id == fault.role) {
+        return Err(RuntimeError::UnknownRole(fault.role));
+    }
+    if !conversation
+        .failures
+        .iter()
+        .any(|failure| failure.id == fault.failure)
+    {
+        return Err(RuntimeError::Application(format!(
+            "fault plan references undeclared failure {}",
+            fault.failure
+        )));
+    }
+    let fault_plan = fault.clone();
+    let (client_transport, server_transport) = memory_pair();
+    let mut client_transport =
+        FaultInjectingTransport::new(client_transport, "client", fault.clone())?;
+    let mut server_transport = FaultInjectingTransport::new(server_transport, "server", fault)?;
+    let client_fired = client_transport.fired();
+    let server_fired = server_transport.fired();
+    let client_conversation = conversation.clone();
+    let server_conversation = conversation.clone();
+    let prompt = prompt.to_string();
+    let (client, server) = std::thread::scope(|scope| {
+        let server_worker = scope.spawn(move || {
+            run_generate_server(&server_conversation, &mut server_transport, token_limit)
+        });
+        let client_worker = scope.spawn(move || {
+            run_generate_client(
+                &client_conversation,
+                &mut client_transport,
+                &prompt,
+                cancel_after,
+            )
+        });
+        let client = client_worker
+            .join()
+            .map_err(|_| RuntimeError::WorkerPanicked)??;
+        let server = server_worker
+            .join()
+            .map_err(|_| RuntimeError::WorkerPanicked)??;
+        Ok::<_, RuntimeError>((client, server))
+    })?;
+    if !client_fired.load(Ordering::Relaxed) && !server_fired.load(Ordering::Relaxed) {
+        return Err(RuntimeError::Application(format!(
+            "fault plan did not fire: {} {} occurrence {} was not reached",
+            fault_plan.role,
+            fault_plan.operation.as_str(),
+            fault_plan.occurrence
+        )));
+    }
+    let mut report = demo_report("memory+fault", client, server);
+    report.fault_plan = Some(fault_plan);
+    Ok(report)
 }
 
 pub fn run_tcp_demo(
@@ -911,23 +1212,49 @@ fn prompt_payload(frame: &Frame) -> Result<&str, RuntimeError> {
 }
 
 fn send_and_record<T: Transport>(
+    machine: &mut EndpointMachine,
     transport: &mut T,
     envelope: &WireEnvelope,
     trace: &mut Vec<Frame>,
-) -> Result<(), RuntimeError> {
-    transport.send(envelope)?;
-    trace.push(envelope.frame.clone());
-    Ok(())
+) -> Result<bool, RuntimeError> {
+    match transport.send(envelope) {
+        Ok(()) => {
+            trace.push(envelope.frame.clone());
+            Ok(true)
+        }
+        Err(error) => {
+            let Some(failure) = error.transport_failure().map(str::to_string) else {
+                return Err(error);
+            };
+            transport.abort();
+            let fault = machine.observe_failure_at(&envelope.state, &failure)?;
+            trace.push(fault);
+            Ok(false)
+        }
+    }
 }
 
 fn receive_and_record<T: Transport>(
     machine: &mut EndpointMachine,
     transport: &mut T,
     trace: &mut Vec<Frame>,
-) -> Result<Frame, RuntimeError> {
-    let frame = machine.accept(transport.receive()?)?;
-    trace.push(frame.clone());
-    Ok(frame)
+) -> Result<Option<Frame>, RuntimeError> {
+    match transport.receive() {
+        Ok(envelope) => {
+            let frame = machine.accept(envelope)?;
+            trace.push(frame.clone());
+            Ok(Some(frame))
+        }
+        Err(error) => {
+            let Some(failure) = error.transport_failure().map(str::to_string) else {
+                return Err(error);
+            };
+            transport.abort();
+            let fault = machine.observe_failure(&failure)?;
+            trace.push(fault);
+            Ok(None)
+        }
+    }
 }
 
 fn trace_identity(trace: &[Frame]) -> String {
@@ -956,6 +1283,8 @@ fn report(
         frames: machine.sequence(),
         tokens,
         completed: machine.is_complete(),
+        successful: machine.is_successful(),
+        failure: machine.failure().map(str::to_string),
         final_state: machine.current_state().to_string(),
         semantic_trace,
     }
@@ -967,10 +1296,17 @@ fn demo_report(
     server: ExecutionReport,
 ) -> DemoReport {
     let semantic_trace_equivalent = client.semantic_trace == server.semantic_trace;
+    let outcome_equivalent = client.completed
+        && server.completed
+        && client.successful == server.successful
+        && client.failure == server.failure
+        && client.final_state == server.final_state;
     DemoReport {
         transport_plan: transport_plan.to_string(),
         conversation_identity: client.conversation_identity.clone(),
         semantic_trace_equivalent,
+        outcome_equivalent,
+        fault_plan: None,
         client,
         server,
     }
@@ -1024,6 +1360,74 @@ mod tests {
             report.client.conversation_identity,
             report.server.conversation_identity
         );
+    }
+
+    #[test]
+    fn deterministic_transport_fault_reaches_typed_failure_on_both_roles() {
+        let report = run_memory_fault_demo(
+            &conversation(),
+            "hello",
+            5,
+            None,
+            FaultPlan {
+                role: "server".to_string(),
+                operation: FaultOperation::Send,
+                occurrence: 2,
+                failure: "transport.closed".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(report.client.completed);
+        assert!(report.server.completed);
+        assert!(!report.client.successful);
+        assert!(!report.server.successful);
+        assert_eq!(report.client.failure.as_deref(), Some("transport.closed"));
+        assert_eq!(report.server.failure.as_deref(), Some("transport.closed"));
+        assert!(report.outcome_equivalent);
+        assert!(!report.semantic_trace_equivalent);
+        assert_eq!(
+            report.fault_plan.as_ref().map(|plan| plan.occurrence),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn deterministic_receive_fault_reaches_typed_failure_on_both_roles() {
+        let report = run_memory_fault_demo(
+            &conversation(),
+            "hello",
+            5,
+            None,
+            FaultPlan {
+                role: "client".to_string(),
+                operation: FaultOperation::Receive,
+                occurrence: 2,
+                failure: "transport.closed".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(report.client.completed);
+        assert!(report.server.completed);
+        assert!(report.outcome_equivalent);
+        assert_eq!(report.client.failure, report.server.failure);
+    }
+
+    #[test]
+    fn fault_demo_rejects_an_unreached_occurrence() {
+        let error = run_memory_fault_demo(
+            &conversation(),
+            "hello",
+            1,
+            None,
+            FaultPlan {
+                role: "server".to_string(),
+                operation: FaultOperation::Send,
+                occurrence: 99,
+                failure: "transport.closed".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fault plan did not fire"));
     }
 
     #[test]

@@ -1,0 +1,34 @@
+{
+  "benchmark": "request-token-done/json-channels/v0",
+  "config": {
+    "eve_version": "0.1.0",
+    "iterations": 200,
+    "warmup_iterations": 20,
+    "tokens": 3,
+    "prompt_bytes": 33,
+    "build_profile": "release",
+    "target_os": "macos",
+    "target_arch": "aarch64"
+  },
+  "eve_reference": {
+    "min_ns": 82584,
+    "median_ns": 96459,
+    "mean_ns": 104971,
+    "p95_ns": 172250,
+    "max_ns": 200542
+  },
+  "conventional_baseline": {
+    "min_ns": 35042,
+    "median_ns": 44750,
+    "mean_ns": 48854,
+    "p95_ns": 88333,
+    "max_ns": 102708
+  },
+  "median_overhead_ratio": 2.155508379888268,
+  "notes": [
+    "This is a local reference-runtime microbenchmark, not a production performance claim.",
+    "Both variants include thread creation, channels, JSON encoding, and JSON decoding in every sample.",
+    "Eve additionally includes projection, semantic identity, state-machine checks, and full wire envelopes.",
+    "Run the release binary on an otherwise idle machine and compare saved reports, not isolated runs."
+  ]
+}

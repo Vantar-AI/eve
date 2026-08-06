@@ -1,0 +1,13 @@
+[
+  {
+    "op": "data",
+    "from": "client",
+    "to": "server",
+    "message": "prompt"
+  },
+  {
+    "op": "fault",
+    "observer": "client",
+    "failure": "transport.closed"
+  }
+]

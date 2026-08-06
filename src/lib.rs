@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use thiserror::Error;
 
+pub mod benchmark;
 pub mod runtime;
 
 pub const CONVERSATION_FORMAT: &str = "0.1.0";
@@ -18,6 +19,8 @@ pub struct Conversation {
     pub module: Module,
     pub roles: Vec<Role>,
     pub types: Vec<TypeDefinition>,
+    #[serde(default)]
+    pub failures: Vec<FailureDefinition>,
     pub initial: String,
     pub states: Vec<GlobalState>,
     #[serde(default)]
@@ -50,6 +53,16 @@ pub struct TypeDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FailureDefinition {
+    pub id: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum GlobalState {
     Send {
@@ -60,11 +73,15 @@ pub enum GlobalState {
         next: String,
         #[serde(default)]
         deadline: Option<String>,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     Choice {
         id: String,
         chooser: String,
         branches: BTreeMap<String, String>,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     Cancel {
         id: String,
@@ -72,9 +89,15 @@ pub enum GlobalState {
         to: String,
         scope: String,
         next: String,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     End {
         id: String,
+    },
+    Fail {
+        id: String,
+        failure: String,
     },
 }
 
@@ -84,15 +107,40 @@ impl GlobalState {
             Self::Send { id, .. }
             | Self::Choice { id, .. }
             | Self::Cancel { id, .. }
-            | Self::End { id } => id,
+            | Self::End { id }
+            | Self::Fail { id, .. } => id,
         }
     }
 
     fn successors(&self) -> Vec<&str> {
         match self {
-            Self::Send { next, .. } | Self::Cancel { next, .. } => vec![next],
-            Self::Choice { branches, .. } => branches.values().map(String::as_str).collect(),
-            Self::End { .. } => Vec::new(),
+            Self::Send {
+                next, on_failure, ..
+            }
+            | Self::Cancel {
+                next, on_failure, ..
+            } => std::iter::once(next.as_str())
+                .chain(on_failure.values().map(String::as_str))
+                .collect(),
+            Self::Choice {
+                branches,
+                on_failure,
+                ..
+            } => branches
+                .values()
+                .chain(on_failure.values())
+                .map(String::as_str)
+                .collect(),
+            Self::End { .. } | Self::Fail { .. } => Vec::new(),
+        }
+    }
+
+    fn failure_target(&self, failure: &str) -> Option<&str> {
+        match self {
+            Self::Send { on_failure, .. }
+            | Self::Choice { on_failure, .. }
+            | Self::Cancel { on_failure, .. } => on_failure.get(failure).map(String::as_str),
+            Self::End { .. } | Self::Fail { .. } => None,
         }
     }
 
@@ -111,6 +159,7 @@ impl GlobalState {
                 from, to, scope, ..
             } => format!("cancel {from} -> {to}: {scope}"),
             Self::End { .. } => "end of conversation".to_string(),
+            Self::Fail { failure, .. } => format!("terminal failure {failure}"),
         }
     }
 }
@@ -190,6 +239,13 @@ pub fn validate(conversation: &Conversation) -> Result<(), ValidationErrors> {
         }
     }
 
+    let failure_ids = unique_ids(
+        conversation.failures.iter().map(|item| item.id.as_str()),
+        "$.failures",
+        "failure",
+        &mut diagnostics,
+    );
+
     let mut states = BTreeMap::new();
     for (index, state) in conversation.states.iter().enumerate() {
         if states.insert(state.id(), state).is_some() {
@@ -216,6 +272,7 @@ pub fn validate(conversation: &Conversation) -> Result<(), ValidationErrors> {
                 to,
                 message,
                 next,
+                on_failure,
                 ..
             } => {
                 validate_roles(index, from, to, &role_ids, &mut diagnostics);
@@ -227,9 +284,13 @@ pub fn validate(conversation: &Conversation) -> Result<(), ValidationErrors> {
                     });
                 }
                 validate_target(index, "next", next, &states, &mut diagnostics);
+                validate_failure_edges(index, on_failure, &failure_ids, &states, &mut diagnostics);
             }
             GlobalState::Choice {
-                chooser, branches, ..
+                chooser,
+                branches,
+                on_failure,
+                ..
             } => {
                 if !role_ids.contains(chooser) {
                     diagnostics.push(Diagnostic {
@@ -255,12 +316,14 @@ pub fn validate(conversation: &Conversation) -> Result<(), ValidationErrors> {
                     }
                     validate_target(index, label, target, &states, &mut diagnostics);
                 }
+                validate_failure_edges(index, on_failure, &failure_ids, &states, &mut diagnostics);
             }
             GlobalState::Cancel {
                 from,
                 to,
                 scope,
                 next,
+                on_failure,
                 ..
             } => {
                 validate_roles(index, from, to, &role_ids, &mut diagnostics);
@@ -272,6 +335,16 @@ pub fn validate(conversation: &Conversation) -> Result<(), ValidationErrors> {
                     });
                 }
                 validate_target(index, "next", next, &states, &mut diagnostics);
+                validate_failure_edges(index, on_failure, &failure_ids, &states, &mut diagnostics);
+            }
+            GlobalState::Fail { failure, .. } => {
+                if !failure_ids.contains(failure) {
+                    diagnostics.push(Diagnostic {
+                        code: "EVE0019",
+                        path: format!("$.states[{index}].failure"),
+                        message: format!("unknown failure type {failure}"),
+                    });
+                }
             }
             GlobalState::End { .. } => {}
         }
@@ -359,6 +432,46 @@ fn validate_target(
     }
 }
 
+fn validate_failure_edges(
+    index: usize,
+    on_failure: &BTreeMap<String, String>,
+    failures: &BTreeSet<String>,
+    states: &BTreeMap<&str, &GlobalState>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for (failure, target) in on_failure {
+        if !failures.contains(failure) {
+            diagnostics.push(Diagnostic {
+                code: "EVE0019",
+                path: format!("$.states[{index}].on_failure.{failure}"),
+                message: format!("unknown failure type {failure}"),
+            });
+        }
+        validate_target(
+            index,
+            &format!("on_failure.{failure}"),
+            target,
+            states,
+            diagnostics,
+        );
+        if let Some(target_state) = states.get(target.as_str()) {
+            match target_state {
+                GlobalState::Fail {
+                    failure: terminal_failure,
+                    ..
+                } if terminal_failure == failure => {}
+                _ => diagnostics.push(Diagnostic {
+                    code: "EVE0020",
+                    path: format!("$.states[{index}].on_failure.{failure}"),
+                    message: format!(
+                        "failure edge must target a terminal fail state for {failure}"
+                    ),
+                }),
+            }
+        }
+    }
+}
+
 fn validate_reachability(
     conversation: &Conversation,
     states: &BTreeMap<&str, &GlobalState>,
@@ -366,7 +479,7 @@ fn validate_reachability(
 ) {
     let mut reachable = BTreeSet::new();
     let mut queue = VecDeque::from([conversation.initial.as_str()]);
-    let mut reaches_end = false;
+    let mut reaches_terminal = false;
 
     while let Some(id) = queue.pop_front() {
         if !reachable.insert(id) {
@@ -375,8 +488,8 @@ fn validate_reachability(
         let Some(state) = states.get(id) else {
             continue;
         };
-        if matches!(state, GlobalState::End { .. }) {
-            reaches_end = true;
+        if matches!(state, GlobalState::End { .. } | GlobalState::Fail { .. }) {
+            reaches_terminal = true;
         }
         queue.extend(state.successors());
     }
@@ -391,11 +504,12 @@ fn validate_reachability(
         }
     }
 
-    if !reaches_end {
+    if !reaches_terminal {
         diagnostics.push(Diagnostic {
             code: "EVE0018",
             path: "$.states".to_string(),
-            message: "no terminal state is reachable from the initial state".to_string(),
+            message: "no successful or failed terminal state is reachable from the initial state"
+                .to_string(),
         });
     }
 }
@@ -420,6 +534,8 @@ pub enum EndpointState {
         next: String,
         #[serde(default)]
         deadline: Option<String>,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     Receive {
         id: String,
@@ -428,30 +544,44 @@ pub enum EndpointState {
         next: String,
         #[serde(default)]
         deadline: Option<String>,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     Select {
         id: String,
         branches: BTreeMap<String, String>,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     Branch {
         id: String,
         from: String,
         branches: BTreeMap<String, String>,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     SendCancel {
         id: String,
         to: String,
         scope: String,
         next: String,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     ReceiveCancel {
         id: String,
         from: String,
         scope: String,
         next: String,
+        #[serde(default)]
+        on_failure: BTreeMap<String, String>,
     },
     End {
         id: String,
+    },
+    Fail {
+        id: String,
+        failure: String,
     },
 }
 
@@ -464,7 +594,20 @@ impl EndpointState {
             | Self::Branch { id, .. }
             | Self::SendCancel { id, .. }
             | Self::ReceiveCancel { id, .. }
-            | Self::End { id } => id,
+            | Self::End { id }
+            | Self::Fail { id, .. } => id,
+        }
+    }
+
+    pub fn failure_target(&self, failure: &str) -> Option<&str> {
+        match self {
+            Self::Send { on_failure, .. }
+            | Self::Receive { on_failure, .. }
+            | Self::Select { on_failure, .. }
+            | Self::Branch { on_failure, .. }
+            | Self::SendCancel { on_failure, .. }
+            | Self::ReceiveCancel { on_failure, .. } => on_failure.get(failure).map(String::as_str),
+            Self::End { .. } | Self::Fail { .. } => None,
         }
     }
 }
@@ -500,12 +643,14 @@ fn project_state(state: &GlobalState, role: &str) -> EndpointState {
             message,
             next,
             deadline,
+            on_failure,
         } if from == role => EndpointState::Send {
             id: id.clone(),
             to: to.clone(),
             message: message.clone(),
             next: next.clone(),
             deadline: deadline.clone(),
+            on_failure: on_failure.clone(),
         },
         GlobalState::Send {
             id,
@@ -513,6 +658,7 @@ fn project_state(state: &GlobalState, role: &str) -> EndpointState {
             message,
             next,
             deadline,
+            on_failure,
             ..
         } => EndpointState::Receive {
             id: id.clone(),
@@ -520,23 +666,28 @@ fn project_state(state: &GlobalState, role: &str) -> EndpointState {
             message: message.clone(),
             next: next.clone(),
             deadline: deadline.clone(),
+            on_failure: on_failure.clone(),
         },
         GlobalState::Choice {
             id,
             chooser,
             branches,
+            on_failure,
         } if chooser == role => EndpointState::Select {
             id: id.clone(),
             branches: branches.clone(),
+            on_failure: on_failure.clone(),
         },
         GlobalState::Choice {
             id,
             chooser,
             branches,
+            on_failure,
         } => EndpointState::Branch {
             id: id.clone(),
             from: chooser.clone(),
             branches: branches.clone(),
+            on_failure: on_failure.clone(),
         },
         GlobalState::Cancel {
             id,
@@ -544,25 +695,33 @@ fn project_state(state: &GlobalState, role: &str) -> EndpointState {
             to,
             scope,
             next,
+            on_failure,
         } if from == role => EndpointState::SendCancel {
             id: id.clone(),
             to: to.clone(),
             scope: scope.clone(),
             next: next.clone(),
+            on_failure: on_failure.clone(),
         },
         GlobalState::Cancel {
             id,
             from,
             scope,
             next,
+            on_failure,
             ..
         } => EndpointState::ReceiveCancel {
             id: id.clone(),
             from: from.clone(),
             scope: scope.clone(),
             next: next.clone(),
+            on_failure: on_failure.clone(),
         },
         GlobalState::End { id } => EndpointState::End { id: id.clone() },
+        GlobalState::Fail { id, failure } => EndpointState::Fail {
+            id: id.clone(),
+            failure: failure.clone(),
+        },
     }
 }
 
@@ -585,6 +744,10 @@ pub enum Frame {
         to: String,
         scope: String,
     },
+    Fault {
+        observer: String,
+        failure: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -592,6 +755,9 @@ pub struct TraceReport {
     pub steps: usize,
     pub final_state: String,
     pub complete: bool,
+    pub successful: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
 }
 
 #[derive(Debug, Error)]
@@ -613,6 +779,11 @@ pub fn verify_trace(
         .iter()
         .map(|state| (state.id(), state))
         .collect::<BTreeMap<_, _>>();
+    let roles = conversation
+        .roles
+        .iter()
+        .map(|role| role.id.as_str())
+        .collect::<BTreeSet<_>>();
     let mut current = conversation.initial.as_str();
 
     for (step, frame) in frames.iter().enumerate() {
@@ -620,6 +791,13 @@ pub fn verify_trace(
             .get(current)
             .expect("validated conversation has all targets");
         current = match (state, frame) {
+            (state, Frame::Fault { observer, failure })
+                if roles.contains(observer.as_str()) && state.failure_target(failure).is_some() =>
+            {
+                state
+                    .failure_target(failure)
+                    .expect("guard established failure target")
+            }
             (
                 GlobalState::Send {
                     from,
@@ -666,11 +844,19 @@ pub fn verify_trace(
         };
     }
 
-    let complete = matches!(states[current], GlobalState::End { .. });
+    let terminal = states[current];
+    let complete = matches!(terminal, GlobalState::End { .. } | GlobalState::Fail { .. });
+    let successful = matches!(terminal, GlobalState::End { .. });
+    let failure = match terminal {
+        GlobalState::Fail { failure, .. } => Some(failure.clone()),
+        _ => None,
+    };
     Ok(TraceReport {
         steps: frames.len(),
         final_state: current.to_string(),
         complete,
+        successful,
+        failure,
     })
 }
 
@@ -681,6 +867,9 @@ pub fn describe_frame(frame: &Frame) -> String {
         } => format!("data {from} -> {to}: {message}"),
         Frame::Select { by, label } => format!("select by {by}: {label}"),
         Frame::Cancel { from, to, scope } => format!("cancel {from} -> {to}: {scope}"),
+        Frame::Fault { observer, failure } => {
+            format!("fault observed by {observer}: {failure}")
+        }
     }
 }
 
@@ -726,6 +915,21 @@ mod tests {
         let report = verify_trace(&conversation(), &frames).unwrap();
         assert!(report.complete);
         assert_eq!(report.final_state, "end");
+        assert!(report.successful);
+        assert_eq!(report.failure, None);
+    }
+
+    #[test]
+    fn accepts_declared_terminal_failure_trace() {
+        let frames: Vec<Frame> = serde_json::from_str(include_str!(
+            "../examples/traces/generate-transport-failure.valid.json"
+        ))
+        .unwrap();
+        let report = verify_trace(&conversation(), &frames).unwrap();
+        assert!(report.complete);
+        assert!(!report.successful);
+        assert_eq!(report.final_state, "transport-failed");
+        assert_eq!(report.failure.as_deref(), Some("transport.closed"));
     }
 
     #[test]
@@ -752,6 +956,21 @@ mod tests {
                 .diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "EVE0016")
+        );
+    }
+
+    #[test]
+    fn rejects_failure_edge_to_a_non_failure_state() {
+        let mut invalid = conversation();
+        if let GlobalState::Send { on_failure, .. } = &mut invalid.states[0] {
+            on_failure.insert("transport.closed".to_string(), "decide".to_string());
+        }
+        let errors = validate(&invalid).unwrap_err();
+        assert!(
+            errors
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "EVE0020")
         );
     }
 }

@@ -38,6 +38,12 @@
         "$ref": "#/$defs/typeDefinition"
       }
     },
+    "failures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/failureDefinition"
+      }
+    },
     "initial": {
       "$ref": "#/$defs/id"
     },
@@ -116,6 +122,33 @@
       },
       "additionalProperties": true
     },
+    "failureDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "description": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "onFailure": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/id"
+      }
+    },
     "state": {
       "oneOf": [
         {
@@ -129,6 +162,9 @@
         },
         {
           "$ref": "#/$defs/endState"
+        },
+        {
+          "$ref": "#/$defs/failState"
         }
       ]
     },
@@ -165,6 +201,9 @@
         "deadline": {
           "type": "string",
           "pattern": "^[0-9]+(ns|us|ms|s|m|h)$"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
         }
       }
     },
@@ -196,6 +235,9 @@
           "additionalProperties": {
             "$ref": "#/$defs/id"
           }
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
         }
       }
     },
@@ -229,6 +271,9 @@
         },
         "next": {
           "$ref": "#/$defs/id"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
         }
       }
     },
@@ -244,6 +289,26 @@
           "const": "end"
         },
         "id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "failState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "failure"
+      ],
+      "properties": {
+        "kind": {
+          "const": "fail"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "failure": {
           "$ref": "#/$defs/id"
         }
       }

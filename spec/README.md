@@ -9,7 +9,7 @@ This directory contains machine-readable experiments for the canonical Eve Graph
 
 The JSON representation is an interchange and debugging format. It is not yet the canonical binary encoding and must not be treated as stable.
 
-The original Eve Graph v0 schema predates the conversation-state model in [RFC-0002](../rfcs/0002-conversation-is-the-computation.md). The separate Conversation v0 experiment now represents two roles, sends, choices, loops, cancellation, and terminal states without pretending the broader Graph schema is already stable.
+The original Eve Graph v0 schema predates the conversation-state model in [RFC-0002](../rfcs/0002-conversation-is-the-computation.md). The separate Conversation v0 experiment now represents two roles, sends, choices, loops, cancellation, declared failures, success terminals, and failure terminals without pretending the broader Graph schema is already stable. In v0, an `on_failure` edge must target a terminal `fail` state carrying the same declared failure ID; retry and recovery graphs are deferred.
 
 ## Canonicalization experiment
 

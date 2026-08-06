@@ -6,7 +6,7 @@
 
 **The graph is the program.** Compile computation, communication, placement, and evolution into one executable plan.
 
-[RFC-0002: Conversation](rfcs/0002-conversation-is-the-computation.md) · [RFC-0001: Kernel](rfcs/0001-eve-language-kernel.md) · [Runtime](docs/runtime.md) · [Vision](docs/vision.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md)
+[RFC-0002: Conversation](rfcs/0002-conversation-is-the-computation.md) · [RFC-0001: Kernel](rfcs/0001-eve-language-kernel.md) · [Runtime](docs/runtime.md) · [Benchmark](docs/benchmark.md) · [Vision](docs/vision.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md)
 
 </div>
 
@@ -61,7 +61,7 @@ The compiler would derive compatible endpoint programs, choose transports such a
 
 ## First executable experiment
 
-The Rust prototype implements a deliberately small slice of [RFC-0002](rfcs/0002-conversation-is-the-computation.md): two roles, typed transitions, choices, loops, cancellation, terminal states, endpoint projection, semantic conversation identity, and execution over interchangeable memory, TCP, and authenticated QUIC plans.
+The Rust prototype implements a deliberately small slice of [RFC-0002](rfcs/0002-conversation-is-the-computation.md): two roles, typed transitions, choices, loops, cancellation, typed terminal failures, endpoint projection, semantic conversation identity, and execution over interchangeable memory, TCP, and authenticated QUIC plans.
 
 ```bash
 # Validate one global server conversation
@@ -84,6 +84,14 @@ cargo run -- demo --transport tcp --tokens 3
 # Execute it over authenticated and encrypted loopback QUIC
 cargo run -- demo --transport quic --tokens 3
 
+# Fail the server's second send and reach the declared failure state
+cargo run -- fault-demo --fault-role server \
+  --fault-operation send --fault-at 2
+
+# Measure the reference runtime against a hand-written JSON protocol
+cargo run --release --locked -- benchmark \
+  --iterations 200 --warmup 20 --tokens 3
+
 # Run the test suite
 cargo test
 ```
@@ -93,6 +101,10 @@ Projection produces `build/endpoints/client.endpoint.json` and `server.endpoint.
 The invalid trace in `examples/traces/generate-wrong-order.invalid.json` demonstrates the central property: a `token` message has the correct data type, but Eve rejects it when the server has not first selected the `token` conversation branch.
 
 The runtime derives both endpoints from the same graph. Every wire envelope carries the experimental SHA-256 semantic identity, expected state, and monotonic sequence. A demo reports whether both roles observed the same semantic trace even when the transport plan changes.
+
+Transport closure is a declared `transport.closed` branch in the example rather than an untyped Rust error. The deterministic fault demo can fail an exact role, operation, and one-based occurrence. Each endpoint records its local `FAULT` observation, so observer-specific trace hashes may differ while both reports still agree on the typed terminal outcome.
+
+The first release-mode microbenchmark puts the current cost in view: on one Apple M4 run, the startup-heavy Eve reference path had a 96.5 µs median versus 44.8 µs for the hand-written baseline, or 2.16× overhead. This is a baseline for optimization, not a general performance claim; see [the benchmark design and limitations](docs/benchmark.md).
 
 To run the endpoints as separate processes:
 
@@ -161,6 +173,7 @@ docs/
   design.md          Principles, semantic model, and non-goals
   architecture.md    Proposed compiler and runtime layers
   runtime.md         Executable memory/TCP reference experiment
+  benchmark.md       Reproducible conventional-baseline microbenchmark
   language.md        Illustrative language surface
   evolution.md       Governed evolutionary execution
   prior-art.md       Existing systems and Eve's intended gap
@@ -178,9 +191,12 @@ examples/
   traces/            Valid and deliberately invalid Eve Wire traces
   evolution.eve      Bounded evolutionary loop
 src/
+  benchmark.rs       Eve versus hand-written reference benchmark
   lib.rs             Checker, endpoint projection, trace validation
   runtime.rs         Endpoint executor and memory/TCP/QUIC wire plans
   main.rs            Experimental `eve` CLI
+benchmarks/
+  reference-...json  Checked-in reference measurement
 ```
 
 ## Current questions

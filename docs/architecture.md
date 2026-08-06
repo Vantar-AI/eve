@@ -95,9 +95,9 @@ Conversation v0 JSON
        ├── memory plan
        ├── length-delimited TCP plan
        └── TLS-authenticated QUIC plan
-    → equivalent semantic trace identities
+    → successful trace equivalence or declared terminal failure
 ```
 
-Each endpoint checks the conversation name, experimental semantic hash, expected state, and sequence before accepting a frame. The memory, TCP, and QUIC plans serialize the same versioned Eve Wire envelope. The reference `Generate` workload completes normally or through the cancellation branch without transport-specific application logic.
+Each endpoint checks the conversation name, experimental semantic hash, expected state, and sequence before accepting a frame. The memory, TCP, and QUIC plans serialize the same versioned Eve Wire envelope. The reference `Generate` workload completes normally, through cancellation, or at a declared `transport.closed` terminal state without transport-specific application logic. A deterministic wrapper can fail an exact role, transport operation, and occurrence for repeatable counterexamples.
 
-This runtime remains an experiment rather than a deployment substrate. It is blocking, supports two static roles, and sends JSON payloads. QUIC encrypts the connection and authenticates the server through an explicitly pinned certificate, but persistent identities, client authentication, authorization, flow control, structural payload validation from Eve type definitions, deadline enforcement, recovery, and transport negotiation remain unimplemented.
+This runtime remains an experiment rather than a deployment substrate. It is blocking, supports two static roles, and sends JSON payloads. QUIC encrypts the connection and authenticates the server through an explicitly pinned certificate, but persistent identities, client authentication, authorization, flow control, structural payload validation from Eve type definitions, deadline enforcement, recovery, distributed failure agreement, and transport negotiation remain unimplemented. The [first baseline measurement](benchmark.md) shows the full reference path is currently slower than a hand-written protocol, establishing a number to improve rather than a performance claim.
