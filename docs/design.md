@@ -28,6 +28,14 @@ AI systems should normally receive a relevant graph slice plus one or more holes
 
 ## Core semantic objects
 
+### Conversation
+
+A global, typed interaction among roles. The conversation specifies legal message sequences, choices, continuations, time, failure, authority, and adaptation boundaries. The compiler projects one local endpoint machine for every role. See [RFC-0002](../rfcs/0002-conversation-is-the-computation.md).
+
+### Role
+
+A participant in a conversation. A role is semantic; an execution plan binds it to one or more cells, processes, servers, accelerators, or external adapters.
+
 ### Node
 
 A logical placement target with declared capabilities. A node might resolve to a process, server, accelerator group, storage system, or isolated sandbox.
@@ -38,7 +46,7 @@ A stateful unit of behavior. Cells receive typed messages, own state, and execut
 
 ### Stream
 
-A typed, directed flow between cells or nodes. A stream declares delivery, ordering, backpressure, latency, privacy, and durability requirements. Local and remote streams share APIs but preserve distinct effects and costs.
+A typed, directed sequence of conversation transitions between roles. A stream declares delivery, ordering, backpressure, latency, privacy, and durability requirements. Local and remote streams preserve distinct effects and costs even when they share a contract.
 
 ### Region
 

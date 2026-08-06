@@ -8,6 +8,8 @@ This directory contains machine-readable experiments for the canonical Eve Graph
 
 The JSON representation is an interchange and debugging format. It is not yet the canonical binary encoding and must not be treated as stable.
 
+The current v0 schema predates the complete conversation-state model in [RFC-0002](../rfcs/0002-conversation-is-the-computation.md). Its cells and flows can represent topology, but choices, continuations, roles, and endpoint projection require the next schema revision.
+
 ## Canonicalization experiment
 
 Eve Graph v0 intends to calculate semantic identity from:

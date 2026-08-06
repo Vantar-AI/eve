@@ -6,12 +6,13 @@ Eve is proposed as a language, compiler, runtime, and wire contract. Those compo
 Text · visual editor · AI graph transactions
     │ parse/project, resolve, type/effect/capability check
     ▼
-Canonical semantic Eve Graph
+Canonical semantic Eve Conversation Graph
     ├── History graph: patches, evidence, lineage, promotion
     │
-    │ partition, place, schedule, specialize
+    │ endpoint-project, partition, place, schedule, specialize
     ▼
 Signed execution plan
+    ├── endpoint machines: one local protocol state machine per role
     ├── compute backends: native, accelerator DSLs, Nuro, framework interop
     ├── transports: shared memory, QUIC, TCP, RDMA, collective libraries
     ├── storage: local, object, distributed log
@@ -25,10 +26,10 @@ The compiler and graph store should perform progressively lower transformations:
 1. Accept a text import or typed graph transaction against a known content identity.
 2. Resolve types, shapes, effects, capabilities, holes, and failure contracts.
 3. Canonicalize and content-address the semantic Eve Graph.
-4. Partition the graph into cells and communication edges.
-5. Accept a topology and capability inventory from the target environment.
-6. Produce one or more candidate placement and transport plans.
-7. Cost the candidates using latency, bandwidth, memory, energy, and reliability objectives.
+4. Project the global conversation into compatible local endpoint machines.
+5. Partition those machines into cells and communication transitions.
+6. Accept a topology and capability inventory from the target environment.
+7. Produce and cost candidate placement, encoding, and transport plans.
 8. Emit signed artifacts and a reproducible plan manifest.
 
 MLIR is a strong candidate for internal compiler infrastructure, but Eve's portable semantics should not be defined merely as whichever MLIR dialects happen to exist.
@@ -40,12 +41,15 @@ The runtime is responsible for:
 - node discovery and authenticated membership;
 - artifact loading and capability assignment;
 - stream creation, flow control, and transport negotiation;
+- conversation-state validation, choice propagation, delegation, and cancellation;
 - clock and cancellation propagation;
 - state checkpoints and deterministic replay where requested;
 - metrics and causal tracing using stable program identities;
 - controlled rollout, comparison, and rollback of variants.
 
 The fast data plane should not route every message through a central coordinator. The control plane may establish policy and placement while cells communicate directly over the selected transport.
+
+Each endpoint executes a projected local state machine. A frame that is type-correct but invalid in the current conversation state is rejected or handled by a declared failure transition.
 
 ## Wire contract
 

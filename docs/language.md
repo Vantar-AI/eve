@@ -4,6 +4,28 @@ This file demonstrates one possible textual view of Eve. It is not the language'
 
 The authoritative program is the canonical Eve Graph described by [RFC-0001](../rfcs/0001-eve-language-kernel.md). Parsing text proposes a graph transaction; printing a graph produces canonical text. Structural AI tools may edit the graph without passing through text at all.
 
+Its primary executable form is a global conversation described by [RFC-0002](../rfcs/0002-conversation-is-the-computation.md), which the compiler projects into one endpoint machine per role.
+
+## A server conversation
+
+```eve
+conversation Generate(prompt: Prompt) -> stream<Token> {
+    roles client, router, expert[*]
+
+    client -> router: prompt within 2ms
+
+    choice router {
+        cached { router -> client: CachedResult; end }
+        infer(expert) {
+            router -> expert: prompt
+            expert -> client: stream<Token>
+        }
+    }
+}
+```
+
+This is one program, not three independently authored services. Endpoint projection derives what each role is allowed to send, receive, choose, and observe.
+
 ## A minimal flow
 
 ```eve

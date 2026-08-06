@@ -2,11 +2,11 @@
 
 # Eve
 
-**A server-native language for evolving intelligence.**
+**The language servers speak to think together.**
 
 **The graph is the program.** Compile computation, communication, placement, and evolution into one executable plan.
 
-[RFC-0001](rfcs/0001-eve-language-kernel.md) · [Vision](docs/vision.md) · [Design](docs/design.md) · [Architecture](docs/architecture.md) · [Text projection](docs/language.md) · [Roadmap](docs/roadmap.md)
+[RFC-0002: Conversation](rfcs/0002-conversation-is-the-computation.md) · [RFC-0001: Kernel](rfcs/0001-eve-language-kernel.md) · [Vision](docs/vision.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md)
 
 </div>
 
@@ -21,7 +21,7 @@ Eve explores what a language would look like if that reality were the starting p
 
 ## The radical path
 
-Eve is not fundamentally a collection of source files. Its source of truth is a **typed, content-addressed distributed graph**. Text, visual tools, and conversations are lossless projections and editors of that graph. AI systems operate through typed graph queries and transactions rather than being forced to regenerate files.
+Eve is not fundamentally a collection of source files. Its source of truth is a **typed, content-addressed conversation graph**. Text, visual tools, and AI operations are lossless projections and editors of that graph. AI systems operate through typed graph queries and transactions rather than being forced to regenerate files.
 
 ```text
 text · visual · AI structural edits
@@ -33,28 +33,31 @@ text · visual · AI structural edits
 
 Meaning remains stable and inspectable. Compilers and evolutionary systems may synthesize implementations, placements, encodings, and wire protocols behind those contracts. Read the decision in [RFC-0001: The Eve language kernel](rfcs/0001-eve-language-kernel.md).
 
+## The conversation is the computation
+
+Eve does not begin with separate client and server programs joined by an API. It begins with one global, typed conversation. The compiler projects that conversation into a local state machine for each server, accelerator, or service. At runtime those endpoints speak Eve Wire: typed transitions that advance their shared computation.
+
+Read the model in [RFC-0002: The conversation is the computation](rfcs/0002-conversation-is-the-computation.md).
+
 The following is one possible text projection—not the authoritative representation:
 
 ```eve
-network training {
-    node learner: gpu[8]
-    node archive: storage
+conversation Generate(prompt: Prompt) -> stream<Token> {
+    roles gateway, router, expert[*]
 
-    stream experience: Batch<f16> from archive to learner
-        latency < 2ms
-        delivery at_least_once
+    gateway -> router: prompt within 2ms
 
-    population policy: Model<Policy> on learner
-
-    evolve policy every 10_000 steps {
-        propose variants: 16
-        evaluate on suite("safety-and-reward")
-        promote best when safety >= parent.safety
+    choice router {
+        cached { router -> gateway: CachedResult; end }
+        infer(expert) {
+            router -> expert: prompt
+            expert -> gateway: stream<Token>
+        }
     }
 }
 ```
 
-The compiler would turn this into a typed distributed program, choose transports such as shared memory, QUIC, or RDMA, place work on available hardware, and enforce the policy around model evolution.
+The compiler would derive compatible endpoint programs, choose transports such as shared memory, QUIC, or RDMA, place work on available hardware, and preserve one traceable conversation identity across them.
 
 ## Why Eve?
 
@@ -72,13 +75,14 @@ This is closer to a language for the data center than a language for an individu
 
 ## Design principles
 
-1. **The network is part of the program.** Local and remote operations must not look accidentally identical; their cost and failure semantics stay visible.
+1. **The conversation is the computation.** A global protocol projects into compatible endpoint programs for every participating server.
 2. **Intent is separate from mechanism.** Programs state constraints. The compiler and runtime choose a transport and execution plan.
 3. **AI-native means structural and inspectable.** Eve exposes typed graph queries, transactions, holes, canonical projections, structured diagnostics, and stable semantics.
 4. **Evolution is governed.** Generated variants run inside explicit capabilities, budgets, tests, and promotion rules. Self-modification is never implicit.
 5. **Copying is a decision.** Ownership, tensor layout, locality, and data movement are represented so zero-copy paths can be used safely.
 6. **Failure is typed.** Timeouts, partial delivery, node loss, and retries belong in function and stream contracts.
 7. **Portable semantics, specialized execution.** The language stays vendor-neutral while backends exploit specific accelerators, NICs, and fabrics.
+8. **Protocols may adapt; meaning stays governed.** Servers can negotiate optimized continuations and wire plans only inside typed, inspectable boundaries.
 
 ## What Eve is not
 
@@ -103,6 +107,7 @@ docs/
   roadmap.md         Validation plan from research to prototype
 rfcs/
   0001-...md         Graph-native language-kernel proposal
+  0002-...md         Server conversation and Eve Wire proposal
 spec/
   eve-graph-...json  Experimental machine-readable graph schema
 examples/

@@ -4,6 +4,9 @@ Eve should reuse existing work and earn every new abstraction. No single compari
 
 | Area | Examples | What Eve should learn or reuse | Intended difference |
 |---|---|---|---|
+| Process calculi | π-calculus, CSP | Computation as communication; channel mobility; behavioral equivalence | Compile the theory into AI-authored, content-addressed server conversations |
+| Session types | Binary and multiparty session types | Typed sequences, choices, dual endpoints, global-to-local projection | Add adaptive wire plans, tensors, capabilities, and governed evolution |
+| Choreographic programming | Choral, HasChor | Write one global interaction and generate each endpoint | Make the choreography the canonical machine-editable graph and runtime wire contract |
 | Content-addressed languages | Unison | Definitions identified by syntax-tree content; names as metadata | Extend content identity across distributed contracts, plans, and evolutionary history |
 | Structural/live programming | Hazel/Hazelnut | Typed holes, meaningful incomplete programs, typed edit actions | Make structural editing native to AI-authored distributed graphs |
 | Fault-tolerant actors | Erlang/OTP, Pony, Orleans | Supervision, isolation, messaging, capabilities | Tensor-aware placement, data movement, and evolutionary contracts |
@@ -37,6 +40,9 @@ If this combination can be expressed cleanly as libraries and configuration in a
 - [Unison's content-addressed code](https://www.unison-lang.org/docs/the-big-idea/)
 - [Hazel typed-hole environment](https://hazel.org/)
 - [P language semantics](https://p-org.github.io/P/advanced/psemantics/)
+- [π-calculus](https://doi.org/10.1016/0890-5401(92)90008-4)
+- [Choral](https://www.choral-lang.org/)
+- [HasChor](https://arxiv.org/abs/2303.00924)
 - [egg equality saturation](https://egraphs-good.github.io/egg/egg/tutorials/_01_background/)
 - [StableHLO](https://openxla.org/stablehlo/)
 - [IREE](https://iree.dev/)

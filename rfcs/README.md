@@ -33,3 +33,4 @@ The implementation may evolve quickly. Accepted semantics require a conformance 
 | RFC | Status | Title |
 |---|---|---|
 | [0001](0001-eve-language-kernel.md) | Draft | The Eve language kernel |
+| [0002](0002-conversation-is-the-computation.md) | Draft | The conversation is the computation |

@@ -11,7 +11,7 @@ The dominant programming abstractions were not designed for this:
 - Orchestrators understand containers and desired replicas, but not the semantics of tensors, streams, or evaluation gates.
 - AI frameworks understand graphs and gradients, but usually treat the surrounding distributed system as configuration and runtime convention.
 
-Eve's thesis is that computation, communication, placement, and governed evolution should share one semantic model.
+Eve's thesis is stronger than putting computation beside communication: **server conversation is computation**. One global interaction should compile into the local programs and wire behavior of every participant while placement and governed evolution remain part of the same semantic model.
 
 ## The target
 

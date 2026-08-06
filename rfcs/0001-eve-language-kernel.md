@@ -23,6 +23,8 @@ Eve separates three artifacts:
 
 This RFC defines the kernel shared by all three.
 
+[RFC-0002](0002-conversation-is-the-computation.md) defines the graph's primary executable meaning: a global server conversation projected into local endpoint machines.
+
 ## Motivation
 
 Text is an effective interface for people, but a poor universal source of truth for systems increasingly authored by people, models, compilers, and evolutionary search.

@@ -18,14 +18,16 @@ Eve should advance by falsifiable prototypes, not by designing a large language 
 **Goal:** validate semantics before inventing source syntax.
 
 - Define a versioned graph schema for cells, flows, effects, capabilities, typed holes, and placement constraints.
+- Define global conversations, roles, choices, continuations, and explicit failure branches.
 - Build a validator and canonical serializer.
 - Implement content identity, graph queries, and transactional structural patches.
+- Implement endpoint projection into one deterministic local protocol machine per role.
 - Prove through fixtures that renames, formatting, and projection order do not change semantic identity.
 - Produce execution plans for local processes and a small multi-server testbed.
 - Use existing transports; begin with shared memory and QUIC or TCP.
 - Add deterministic fault injection and causal traces.
 
-**Exit criterion:** one graph runs unchanged on a laptop simulation and a multi-node deployment, with explainable plan differences; a typed hole can be queried and filled without text rewriting.
+**Exit criterion:** one conversation graph projects into compatible endpoints and runs unchanged on a laptop simulation and a multi-node deployment, with explainable plan differences; a typed hole can be queried and filled without text rewriting.
 
 ## Phase 2 — Minimal Eve front end
 
@@ -33,6 +35,7 @@ Eve should advance by falsifiable prototypes, not by designing a large language 
 
 - Implement the smallest text projection, parser/importer, formatter, type/effect checker, and structured diagnostics.
 - Support cells, streams, schemas, placement constraints, deadlines, and capabilities.
+- Support conversational send, choice, repeat, cancellation, and terminal states.
 - Provide a Rust or Python embedding API.
 - Compare model-generated graph transactions with text edits and equivalent changes in conventional infrastructure code.
 
