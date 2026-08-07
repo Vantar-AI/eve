@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use eve::benchmark::run_reference_benchmark;
-use eve::plan::EvePlan;
+use eve::plan::{EvePlan, PreparedPlan};
 use eve::runtime::{
     FaultOperation, FaultPlan, QuicListener, QuicTransport, TcpTransport, WireEncoding,
-    run_generate_client, run_generate_server, run_memory_demo, run_memory_fault_demo,
+    run_generate_client_plan, run_generate_server_plan, run_memory_demo, run_memory_fault_demo,
     run_memory_plan_demo_with_encoding, run_quic_demo, run_quic_plan_demo_with_encoding,
     run_tcp_demo, run_tcp_plan_demo_with_encoding,
 };
@@ -137,6 +137,9 @@ enum Command {
         listen: SocketAddr,
         #[arg(long, default_value_t = 3)]
         tokens: usize,
+        /// Bind the session to the reference or compact wire encoding.
+        #[arg(long, value_enum, default_value_t = WireEncodingArg::Reference)]
+        wire: WireEncodingArg,
     },
     /// Connect the client endpoint to an Eve TCP server.
     Connect {
@@ -151,6 +154,9 @@ enum Command {
         prompt: String,
         #[arg(long)]
         cancel_after: Option<usize>,
+        /// Require exact agreement on the reference or compact wire encoding.
+        #[arg(long, value_enum, default_value_t = WireEncodingArg::Reference)]
+        wire: WireEncodingArg,
     },
     /// Serve one projected endpoint over authenticated QUIC.
     ServeQuic {
@@ -163,6 +169,9 @@ enum Command {
         certificate_out: PathBuf,
         #[arg(long, default_value_t = 3)]
         tokens: usize,
+        /// Bind the TLS-authenticated session to this wire encoding.
+        #[arg(long, value_enum, default_value_t = WireEncodingArg::Reference)]
+        wire: WireEncodingArg,
     },
     /// Connect the client endpoint over QUIC using a pinned server certificate.
     ConnectQuic {
@@ -179,6 +188,9 @@ enum Command {
         prompt: String,
         #[arg(long)]
         cancel_after: Option<usize>,
+        /// Require the authenticated server to use this exact wire encoding.
+        #[arg(long, value_enum, default_value_t = WireEncodingArg::Reference)]
+        wire: WireEncodingArg,
     },
 }
 
@@ -363,14 +375,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             conversation,
             listen,
             tokens,
+            wire,
         } => {
             let conversation: Conversation = read_json(&conversation)?;
+            let plan = PreparedPlan::compile(&conversation)?;
+            let wire = wire.into();
             let listener = TcpListener::bind(listen)?;
             println!("Eve server listening on {listen}");
             let (stream, peer) = listener.accept()?;
             println!("accepted Eve endpoint {peer}");
-            let mut transport = TcpTransport::from_stream(stream)?;
-            let report = run_generate_server(&conversation, &mut transport, tokens)?;
+            let mut transport = match wire {
+                WireEncoding::Reference => TcpTransport::from_stream(stream)?,
+                WireEncoding::Compact => TcpTransport::from_stream_compact(stream, &plan)?,
+            };
+            transport.establish_session(&plan, "server", "client")?;
+            let report = run_generate_server_plan(&plan, &mut transport, tokens)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Connect {
@@ -378,10 +397,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             server,
             prompt,
             cancel_after,
+            wire,
         } => {
             let conversation: Conversation = read_json(&conversation)?;
-            let mut transport = TcpTransport::connect(server)?;
-            let report = run_generate_client(&conversation, &mut transport, &prompt, cancel_after)?;
+            let plan = PreparedPlan::compile(&conversation)?;
+            let mut transport = match wire.into() {
+                WireEncoding::Reference => TcpTransport::connect(server)?,
+                WireEncoding::Compact => TcpTransport::connect_compact(server, &plan)?,
+            };
+            transport.establish_session(&plan, "client", "server")?;
+            let report = run_generate_client_plan(&plan, &mut transport, &prompt, cancel_after)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::ServeQuic {
@@ -389,8 +414,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             listen,
             certificate_out,
             tokens,
+            wire,
         } => {
             let conversation: Conversation = read_json(&conversation)?;
+            let plan = PreparedPlan::compile(&conversation)?;
             let listener = QuicListener::bind(listen)?;
             if let Some(parent) = certificate_out.parent()
                 && !parent.as_os_str().is_empty()
@@ -403,8 +430,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 listener.local_addr()?,
                 certificate_out.display()
             );
-            let mut transport = listener.accept()?;
-            let report = run_generate_server(&conversation, &mut transport, tokens)?;
+            let mut transport = match wire.into() {
+                WireEncoding::Reference => listener.accept()?,
+                WireEncoding::Compact => listener.accept_compact(&plan)?,
+            };
+            transport.establish_session(&plan, "server", "client")?;
+            let report = run_generate_server_plan(&plan, &mut transport, tokens)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::ConnectQuic {
@@ -413,11 +444,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             certificate,
             prompt,
             cancel_after,
+            wire,
         } => {
             let conversation: Conversation = read_json(&conversation)?;
+            let plan = PreparedPlan::compile(&conversation)?;
             let trusted_certificate = fs::read(certificate)?;
-            let mut transport = QuicTransport::connect(server, &trusted_certificate)?;
-            let report = run_generate_client(&conversation, &mut transport, &prompt, cancel_after)?;
+            let mut transport = match wire.into() {
+                WireEncoding::Reference => QuicTransport::connect(server, &trusted_certificate)?,
+                WireEncoding::Compact => {
+                    QuicTransport::connect_compact(server, &trusted_certificate, &plan)?
+                }
+            };
+            transport.establish_session(&plan, "client", "server")?;
+            let report = run_generate_client_plan(&plan, &mut transport, &prompt, cancel_after)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
     }

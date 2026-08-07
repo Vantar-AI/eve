@@ -112,7 +112,7 @@ Projection produces `build/endpoints/client.endpoint.json` and `server.endpoint.
 
 The invalid trace in `examples/traces/generate-wrong-order.invalid.json` demonstrates the central property: a `token` message has the correct data type, but Eve rejects it when the server has not first selected the `token` conversation branch.
 
-The runtime derives both endpoints from the same graph. Reference envelopes carry the experimental SHA-256 semantic identity, expected state, and monotonic sequence. The compact path establishes those semantics from the verified plan, then sends only a transition ID, sequence, and optional payload. A demo reports whether both roles observed the same semantic trace even when the transport or encoding changes.
+The runtime derives both endpoints from the same graph. Reference envelopes carry the experimental SHA-256 semantic identity, expected state, and monotonic sequence. The compact path establishes those semantics from the verified plan, then sends only a transition ID, sequence, and optional payload. TCP and QUIC peers first exchange a fail-closed session preface that binds the version, conversation, plan, roles, and exact encoding. A demo reports whether both roles observed the same semantic trace even when the transport or encoding changes.
 
 Transport closure, timeout, reset, unreachable, and uncertainty are declared branches rather than untyped Rust errors. The deterministic fault demo can fail an exact role, operation, and one-based occurrence. An injected server timeout can produce `transport.timeout` locally while the peer records `transport.uncertain`; Eve does not pretend a partition gives both roles identical knowledge.
 
@@ -128,19 +128,21 @@ cargo run -- serve --listen 127.0.0.1:7878 --tokens 4
 cargo run -- connect --server 127.0.0.1:7878 --cancel-after 2
 ```
 
+Add `--wire compact` to both commands to use transition IDs across independent processes. A reference/compact or plan mismatch is rejected before frame zero. TCP performs this check without cryptographic authentication.
+
 The QUIC commands use a generated certificate that the client pins explicitly:
 
 ```bash
 # Terminal 1: writes the public certificate, then accepts one QUIC connection
 cargo run -- serve-quic --listen 127.0.0.1:7879 \
-  --certificate-out build/eve-quic-cert.der --tokens 4
+  --wire compact --certificate-out build/eve-quic-cert.der --tokens 4
 
 # Terminal 2: trusts only that exact server certificate
 cargo run -- connect-quic --server 127.0.0.1:7879 \
-  --certificate build/eve-quic-cert.der --cancel-after 2
+  --wire compact --certificate build/eve-quic-cert.der --cancel-after 2
 ```
 
-TCP remains a blocking, plaintext correctness instrument. QUIC adds encryption and pinned server authentication, but the reference runtime is still blocking and handles one conversation per connection. See [the runtime experiment](docs/runtime.md) for the exact boundary.
+TCP remains a blocking, plaintext correctness instrument. QUIC adds encryption and pinned server authentication; its plan preface is protected by that TLS connection, but v0 does not authenticate the client. The reference runtime is still blocking and handles one conversation per connection. See [the runtime experiment](docs/runtime.md) for the exact boundary.
 
 ## Why Eve?
 
@@ -199,10 +201,12 @@ spec/
   eve-graph-...json  Experimental machine-readable graph schema
   eve-conversation-...json  Executable global conversation schema
   eve-plan-...json   Compiled execution-plan schema
+  eve-session-...json  Plan-bound network-preface schema
 examples/
   hello.eve          Minimal server-to-server flow
   hello.evegraph.json  The same idea as a typed incomplete graph
   generate.eveconv.json  Executable request/stream/cancel conversation
+  session-preface.compact.json  Compact network-session binding fixture
   traces/            Valid and deliberately invalid Eve Wire traces
   evolution.eve      Bounded evolutionary loop
 src/

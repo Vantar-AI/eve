@@ -21,6 +21,8 @@ The receiving endpoint independently checks all envelope fields and the permitte
 
 Reference mode serializes that complete semantic envelope. Compact mode resolves the checked frame through the plan's deterministic transition dictionary and sends `{t, q, p?}`: transition ID, sequence, and optional data payload. The receiver reconstructs the complete envelope from its verified plan before running the same checks. See [Eve Wire v0](wire.md).
 
+Before TCP or QUIC frame zero, both roles exchange an Eve Session Preface containing session version, conversation and plan identity, role, and exact encoding. Either side aborts on any mismatch; compact transports refuse frame I/O until the preface succeeds.
+
 The SHA-256 value is an experimental semantic identity. It excludes the schema path and annotations, but it is not yet an Eve `ContentId`; canonicalization fixtures and normalization rules must exist before that name is justified.
 
 ## Transport plans
@@ -45,11 +47,15 @@ The roles can also run as separate operating-system processes:
 
 ```bash
 # Process 1
-cargo run -- serve --listen 127.0.0.1:7878 --tokens 4
+cargo run -- serve --wire compact \
+  --listen 127.0.0.1:7878 --tokens 4
 
 # Process 2
-cargo run -- connect --server 127.0.0.1:7878 --cancel-after 2
+cargo run -- connect --wire compact \
+  --server 127.0.0.1:7878 --cancel-after 2
 ```
+
+Both sides compile the supplied conversation deterministically, exchange plan identities, roles, and exact wire encodings, and reject a mismatch before sending a semantic frame. This TCP check is not authenticated against an active attacker.
 
 ### QUIC
 
@@ -64,14 +70,14 @@ Separate processes use the public certificate as their explicit trust handoff:
 ```bash
 # Process 1
 cargo run -- serve-quic --listen 127.0.0.1:7879 \
-  --certificate-out build/eve-quic-cert.der --tokens 4
+  --wire compact --certificate-out build/eve-quic-cert.der --tokens 4
 
 # Process 2
 cargo run -- connect-quic --server 127.0.0.1:7879 \
-  --certificate build/eve-quic-cert.der --cancel-after 2
+  --wire compact --certificate build/eve-quic-cert.der --cancel-after 2
 ```
 
-The generated private key remains in the server process. The public certificate is regenerated for each server invocation; persistent identity and certificate rotation are intentionally deferred.
+The generated private key remains in the server process. The client pins that server certificate, then verifies the session preface inside the authenticated TLS channel. This binds the server's declared plan, role, and encoding to the pinned key. The public certificate is regenerated for each server invocation; persistent identity, client authentication, authorization, and certificate rotation are intentionally deferred.
 
 After the Eve conversation reaches `end`, the QUIC plan performs a role-ordered close handshake outside the semantic trace. This ensures each process observes the peer's completion before either endpoint releases its QUIC connection.
 
@@ -118,6 +124,7 @@ The prototype currently guarantees only:
 - exact state and sequence agreement;
 - verified reusable plan identity and structurally valid projected state references;
 - deterministic, plan-bound compact transition IDs;
+- fail-closed session-version, conversation, plan, role, and encoding agreement before network frame zero;
 - a maximum envelope size;
 - explicit selection and cancellation transitions;
 - declared terminal transport-failure transitions;
@@ -125,29 +132,30 @@ The prototype currently guarantees only:
 - equivalent successful semantic traces across both encodings and all three implemented transports;
 - explicit asymmetric timeout/uncertainty observations under deterministic faults;
 - QUIC transport encryption and pinned server authentication;
+- binding of the QUIC server's plan preface to that authenticated connection;
 - rejection of a QUIC server presenting an untrusted certificate.
 
 It does not yet provide:
 
-- persistent server identity, client authentication, or authorization;
+- persistent server identity, client authentication, mutual TLS, or authorization;
 - asynchronous multiplexing or flow control;
 - retries, reconnects, recovery branches, or distributed failure agreement;
 - enforcement of declared deadlines;
 - structural validation of payloads from Eve type definitions;
 - canonical graph normalization;
 - bulk tensor transfer or zero-copy buffers;
-- compact-plan negotiation, downgrade protection, or independent-process compact mode;
+- replay-resistant session nonces, resumption, or persistent connection pooling;
 - a binary payload codec or zero-copy performance architecture.
 
 The TCP server listens on loopback by default because that wire plan is plaintext and unauthenticated. QUIC is encrypted, but its generated certificate is suitable only for this explicit pinning experiment.
 
 ## Current result and next experiment
 
-Memory, TCP, and QUIC preserve the same successful semantic trace across reference and compact encodings, and QUIC authenticates the server while encrypting transport data. A wrong pinned certificate is rejected. Conversations compile into reusable, identified endpoint plans with deterministic transition dictionaries. Compact encoding improved the checked-transition median by 1.32× and the complete warm exchange by 1.11×, but remains 1.51× the hand-written baseline. Deterministic failures preserve different local timeout and uncertainty observations.
+Memory, TCP, and QUIC preserve the same successful semantic trace across reference and compact encodings. Independent TCP and QUIC processes now exchange the compact representation after a strict plan-bound preface. QUIC authenticates the server and binds its declared plan to the pinned TLS connection; a wrong certificate or different plan is rejected before frame zero. Conversations compile into reusable, identified endpoint plans with deterministic transition dictionaries. Compact encoding improved the checked-transition median by 1.32× and the complete warm exchange by 1.11×, but remains 1.51× the hand-written baseline. Deterministic failures preserve different local timeout and uncertainty observations.
 
 The next runtime experiment should:
 
-1. Add an authenticated session preface that negotiates and pins the compact plan identity across independent processes.
-2. Measure protocol-machine checks, transition lookup, allocation, encoding, channel transfer, and scheduling separately.
+1. Add client authentication, authorization, and replay-resistant freshness to the server-authenticated QUIC preface.
+2. Measure preface exchange latency, protocol-machine checks, transition lookup, allocation, encoding, channel transfer, and scheduling separately.
 3. Add deadline enforcement and recovery transitions rather than terminal failures only.
 4. Exercise asymmetric faults and the conventional baseline across independent processes and a controlled multi-node testbed.

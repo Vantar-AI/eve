@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vantar.ai/eve/spec/eve-session-v0.schema.json",
+  "title": "Eve Session Preface v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eve_session",
+    "conversation",
+    "conversation_identity",
+    "plan_identity",
+    "role",
+    "wire"
+  ],
+  "properties": {
+    "eve_session": {
+      "const": "0.1.0"
+    },
+    "conversation": {
+      "$ref": "#/$defs/id"
+    },
+    "conversation_identity": {
+      "$ref": "#/$defs/sha256"
+    },
+    "plan_identity": {
+      "$ref": "#/$defs/sha256"
+    },
+    "role": {
+      "$ref": "#/$defs/id"
+    },
+    "wire": {
+      "enum": ["reference", "compact"]
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

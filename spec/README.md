@@ -7,12 +7,15 @@ This directory contains machine-readable experiments for the canonical Eve Graph
 - [`eve-graph-v0.schema.json`](eve-graph-v0.schema.json) — JSON Schema for the first interchange experiment.
 - [`eve-conversation-v0.schema.json`](eve-conversation-v0.schema.json) — executable two-role conversation interchange used by the Rust prototype.
 - [`eve-plan-v0.schema.json`](eve-plan-v0.schema.json) — compiled two-endpoint execution-plan artifact, including the optional compact transition dictionary used to start reusable sessions.
+- [`eve-session-v0.schema.json`](eve-session-v0.schema.json) — plan-bound network preface exchanged before reference or compact Eve frames.
 
 The JSON representation is an interchange and debugging format. It is not yet the canonical binary encoding and must not be treated as stable.
 
 The original Eve Graph v0 schema predates the conversation-state model in [RFC-0002](../rfcs/0002-conversation-is-the-computation.md). The separate Conversation v0 experiment now represents two roles, sends, choices, loops, cancellation, declared failures, success terminals, and failure terminals without pretending the broader Graph schema is already stable. In v0, an `on_failure` edge must target a terminal `fail` state carrying the same declared failure ID; retry and recovery graphs are deferred.
 
 Eve Plan v0 is a derived artifact, not another semantic source. It carries the experimental conversation identity, deterministic plan identity, projected endpoint graphs, and a compiler-derived compact-wire dictionary. JSON Schema checks its representation; the Rust plan verifier additionally recalculates the digest, validates state and role references, and rejects a noncanonical transition table before sessions are created. Older v0 artifacts may omit `wire`; the runtime derives it when preparing the plan.
+
+Eve Session Preface v0 binds one network connection to a session version, conversation and plan identity, endpoint role, and exact wire encoding. A mismatch aborts before frame zero. On QUIC the client authenticates this server binding through the pinned TLS certificate; TCP provides no cryptographic authentication, and v0 does not authenticate the QUIC client.
 
 ## Canonicalization experiment
 

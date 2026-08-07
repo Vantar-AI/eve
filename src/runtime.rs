@@ -17,7 +17,11 @@ use std::time::Duration;
 use thiserror::Error;
 
 pub const WIRE_FORMAT: &str = "0.1.0";
+pub const SESSION_FORMAT: &str = "0.1.0";
 const MAX_ENVELOPE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_SESSION_PREFACE_BYTES: usize = 64 * 1024;
+const SESSION_REJECTED: u8 = 0;
+const SESSION_ACCEPTED: u8 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,6 +42,27 @@ pub enum WireEncoding {
     Compact,
 }
 
+impl WireEncoding {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Reference => "reference",
+            Self::Compact => "compact",
+        }
+    }
+}
+
+/// The exact contract two network peers bind before exchanging Eve frames.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPreface {
+    pub eve_session: String,
+    pub conversation: String,
+    pub conversation_identity: String,
+    pub plan_identity: String,
+    pub role: String,
+    pub wire: WireEncoding,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompactEnvelope {
@@ -53,6 +78,7 @@ struct CompactEnvelope {
 struct CompactWireCodec {
     conversation: String,
     conversation_identity: String,
+    plan_identity: String,
     wire: Arc<CompactWirePlan>,
 }
 
@@ -72,12 +98,24 @@ pub enum RuntimeError {
     Codec(#[from] serde_json::Error),
     #[error("compact Eve Wire error: {0}")]
     CompactWire(String),
+    #[error("{0} compact transport requires a verified Eve session preface")]
+    SessionRequired(&'static str),
+    #[error("Eve session mismatch for {field}: expected {expected}, received {actual}")]
+    SessionMismatch {
+        field: &'static str,
+        expected: String,
+        actual: String,
+    },
+    #[error("{0} peer rejected the Eve session preface")]
+    SessionRejected(&'static str),
     #[error("transport I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("{0} transport closed before the conversation completed")]
     TransportClosed(&'static str),
     #[error("wire envelope is {actual} bytes; the limit is {limit} bytes")]
     EnvelopeTooLarge { actual: usize, limit: usize },
+    #[error("Eve session preface is {actual} bytes; the limit is {limit} bytes")]
+    SessionPrefaceTooLarge { actual: usize, limit: usize },
     #[error("unsupported Eve Wire version {actual}; expected {expected}")]
     WireVersion {
         actual: String,
@@ -591,6 +629,99 @@ impl<T: Transport> Transport for FaultInjectingTransport<T> {
     }
 }
 
+impl SessionPreface {
+    fn for_plan(plan: &PreparedPlan, role: &str, wire: WireEncoding) -> Result<Self, RuntimeError> {
+        if plan.endpoint(role).is_none() {
+            return Err(RuntimeError::UnknownRole(role.to_string()));
+        }
+        Ok(Self {
+            eve_session: SESSION_FORMAT.to_string(),
+            conversation: plan.conversation().to_string(),
+            conversation_identity: plan.conversation_identity().to_string(),
+            plan_identity: plan.plan_identity().to_string(),
+            role: role.to_string(),
+            wire,
+        })
+    }
+
+    fn verify_peer(
+        &self,
+        plan: &PreparedPlan,
+        expected_role: &str,
+        expected_wire: WireEncoding,
+    ) -> Result<(), RuntimeError> {
+        if plan.endpoint(expected_role).is_none() {
+            return Err(RuntimeError::UnknownRole(expected_role.to_string()));
+        }
+        require_session_field("eve_session", SESSION_FORMAT, &self.eve_session)?;
+        require_session_field("conversation", plan.conversation(), &self.conversation)?;
+        require_session_field(
+            "conversation_identity",
+            plan.conversation_identity(),
+            &self.conversation_identity,
+        )?;
+        require_session_field("plan_identity", plan.plan_identity(), &self.plan_identity)?;
+        require_session_field("role", expected_role, &self.role)?;
+        require_session_field("wire", expected_wire.as_str(), self.wire.as_str())
+    }
+}
+
+fn local_session_preface(
+    codec: &EnvelopeCodec,
+    plan: &PreparedPlan,
+    local_role: &str,
+    peer_role: &str,
+) -> Result<SessionPreface, RuntimeError> {
+    codec.verify_plan(plan)?;
+    if plan.endpoint(peer_role).is_none() {
+        return Err(RuntimeError::UnknownRole(peer_role.to_string()));
+    }
+    if local_role == peer_role {
+        return Err(RuntimeError::SessionMismatch {
+            field: "role_pair",
+            expected: "distinct local and peer roles".to_string(),
+            actual: local_role.to_string(),
+        });
+    }
+    SessionPreface::for_plan(plan, local_role, codec.encoding())
+}
+
+fn require_session_field(
+    field: &'static str,
+    expected: &str,
+    actual: &str,
+) -> Result<(), RuntimeError> {
+    if expected != actual {
+        return Err(RuntimeError::SessionMismatch {
+            field,
+            expected: expected.to_string(),
+            actual: actual.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn encode_session_preface(preface: &SessionPreface) -> Result<Vec<u8>, RuntimeError> {
+    let encoded = serde_json::to_vec(preface)?;
+    if encoded.len() > MAX_SESSION_PREFACE_BYTES {
+        return Err(RuntimeError::SessionPrefaceTooLarge {
+            actual: encoded.len(),
+            limit: MAX_SESSION_PREFACE_BYTES,
+        });
+    }
+    Ok(encoded)
+}
+
+fn decode_session_preface(encoded: &[u8]) -> Result<SessionPreface, RuntimeError> {
+    if encoded.len() > MAX_SESSION_PREFACE_BYTES {
+        return Err(RuntimeError::SessionPrefaceTooLarge {
+            actual: encoded.len(),
+            limit: MAX_SESSION_PREFACE_BYTES,
+        });
+    }
+    Ok(serde_json::from_slice(encoded)?)
+}
+
 pub struct MemoryTransport {
     outbound: Option<Sender<Vec<u8>>>,
     inbound: Option<Receiver<Vec<u8>>>,
@@ -658,6 +789,7 @@ impl Transport for MemoryTransport {
 pub struct TcpTransport {
     stream: TcpStream,
     codec: EnvelopeCodec,
+    session_established: bool,
 }
 
 impl TcpTransport {
@@ -690,7 +822,81 @@ impl TcpTransport {
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-        Ok(Self { stream, codec })
+        Ok(Self {
+            stream,
+            codec,
+            session_established: false,
+        })
+    }
+
+    pub fn establish_session(
+        &mut self,
+        plan: &PreparedPlan,
+        local_role: &str,
+        peer_role: &str,
+    ) -> Result<SessionPreface, RuntimeError> {
+        let local = local_session_preface(&self.codec, plan, local_role, peer_role)?;
+        let encoded = encode_session_preface(&local)?;
+        let length =
+            u32::try_from(encoded.len()).map_err(|_| RuntimeError::SessionPrefaceTooLarge {
+                actual: encoded.len(),
+                limit: u32::MAX as usize,
+            })?;
+        self.stream.write_all(&length.to_be_bytes())?;
+        self.stream.write_all(&encoded)?;
+        self.stream.flush()?;
+
+        let mut length = [0_u8; 4];
+        self.stream.read_exact(&mut length)?;
+        let length = u32::from_be_bytes(length) as usize;
+        if length > MAX_SESSION_PREFACE_BYTES {
+            return Err(RuntimeError::SessionPrefaceTooLarge {
+                actual: length,
+                limit: MAX_SESSION_PREFACE_BYTES,
+            });
+        }
+        let mut encoded = vec![0; length];
+        self.stream.read_exact(&mut encoded)?;
+        let peer = decode_session_preface(&encoded).and_then(|peer| {
+            peer.verify_peer(plan, peer_role, self.codec.encoding())?;
+            Ok(peer)
+        });
+        let peer = match peer {
+            Ok(peer) => peer,
+            Err(error) => {
+                let _ = self.stream.write_all(&[SESSION_REJECTED]);
+                let _ = self.stream.flush();
+                self.abort();
+                return Err(error);
+            }
+        };
+        let mut peer_status = [SESSION_REJECTED];
+        let status_exchange = (|| -> std::io::Result<()> {
+            self.stream.write_all(&[SESSION_ACCEPTED])?;
+            self.stream.flush()?;
+            self.stream.read_exact(&mut peer_status)
+        })();
+        if let Err(error) = status_exchange {
+            self.abort();
+            return Err(RuntimeError::Io(error));
+        }
+        if peer_status[0] != SESSION_ACCEPTED {
+            self.abort();
+            return Err(RuntimeError::SessionRejected("TCP"));
+        }
+        self.session_established = true;
+        Ok(peer)
+    }
+
+    pub fn session_established(&self) -> bool {
+        self.session_established
+    }
+
+    fn require_compact_session(&self) -> Result<(), RuntimeError> {
+        if self.codec.encoding() == WireEncoding::Compact && !self.session_established {
+            return Err(RuntimeError::SessionRequired("TCP"));
+        }
+        Ok(())
     }
 }
 
@@ -703,6 +909,7 @@ impl Transport for TcpTransport {
     }
 
     fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
+        self.require_compact_session()?;
         let encoded = self.codec.encode(envelope)?;
         let length = u32::try_from(encoded.len()).map_err(|_| RuntimeError::EnvelopeTooLarge {
             actual: encoded.len(),
@@ -715,6 +922,7 @@ impl Transport for TcpTransport {
     }
 
     fn receive(&mut self) -> Result<WireEnvelope, RuntimeError> {
+        self.require_compact_session()?;
         let mut length = [0_u8; 4];
         self.stream.read_exact(&mut length)?;
         let length = u32::from_be_bytes(length) as usize;
@@ -801,6 +1009,7 @@ impl QuicListener {
             finished: false,
             runtime,
             codec,
+            session_established: false,
         })
     }
 }
@@ -813,6 +1022,7 @@ pub struct QuicTransport {
     finished: bool,
     runtime: tokio::runtime::Runtime,
     codec: EnvelopeCodec,
+    session_established: bool,
 }
 
 impl QuicTransport {
@@ -869,7 +1079,98 @@ impl QuicTransport {
             finished: false,
             runtime,
             codec,
+            session_established: false,
         })
+    }
+
+    pub fn establish_session(
+        &mut self,
+        plan: &PreparedPlan,
+        local_role: &str,
+        peer_role: &str,
+    ) -> Result<SessionPreface, RuntimeError> {
+        let local = local_session_preface(&self.codec, plan, local_role, peer_role)?;
+        let encoded = encode_session_preface(&local)?;
+        let length =
+            u32::try_from(encoded.len()).map_err(|_| RuntimeError::SessionPrefaceTooLarge {
+                actual: encoded.len(),
+                limit: u32::MAX as usize,
+            })?;
+        let send = &mut self.send;
+        let receive = &mut self.receive;
+        let peer_length = self
+            .runtime
+            .block_on(async {
+                send.write_all(&length.to_be_bytes())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                send.write_all(&encoded)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let mut peer_length = [0_u8; 4];
+                receive
+                    .read_exact(&mut peer_length)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok::<_, String>(u32::from_be_bytes(peer_length) as usize)
+            })
+            .map_err(RuntimeError::Quic)?;
+        if peer_length > MAX_SESSION_PREFACE_BYTES {
+            return Err(RuntimeError::SessionPrefaceTooLarge {
+                actual: peer_length,
+                limit: MAX_SESSION_PREFACE_BYTES,
+            });
+        }
+        let mut peer_encoded = vec![0; peer_length];
+        self.runtime
+            .block_on(self.receive.read_exact(&mut peer_encoded))
+            .map_err(|error| RuntimeError::Quic(error.to_string()))?;
+        let peer = decode_session_preface(&peer_encoded).and_then(|peer| {
+            peer.verify_peer(plan, peer_role, self.codec.encoding())?;
+            Ok(peer)
+        });
+        let peer = match peer {
+            Ok(peer) => peer,
+            Err(error) => {
+                let send = &mut self.send;
+                let _ = self.runtime.block_on(send.write_all(&[SESSION_REJECTED]));
+                self.abort();
+                return Err(error);
+            }
+        };
+        let mut peer_status = [SESSION_REJECTED];
+        let send = &mut self.send;
+        let receive = &mut self.receive;
+        let status_exchange = self.runtime.block_on(async {
+            send.write_all(&[SESSION_ACCEPTED])
+                .await
+                .map_err(|error| error.to_string())?;
+            receive
+                .read_exact(&mut peer_status)
+                .await
+                .map_err(|error| error.to_string())
+        });
+        if let Err(error) = status_exchange {
+            self.abort();
+            return Err(RuntimeError::Quic(error));
+        }
+        if peer_status[0] != SESSION_ACCEPTED {
+            self.abort();
+            return Err(RuntimeError::SessionRejected("QUIC"));
+        }
+        self.session_established = true;
+        Ok(peer)
+    }
+
+    pub fn session_established(&self) -> bool {
+        self.session_established
+    }
+
+    fn require_compact_session(&self) -> Result<(), RuntimeError> {
+        if self.codec.encoding() == WireEncoding::Compact && !self.session_established {
+            return Err(RuntimeError::SessionRequired("QUIC"));
+        }
+        Ok(())
     }
 }
 
@@ -882,6 +1183,7 @@ impl Transport for QuicTransport {
     }
 
     fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
+        self.require_compact_session()?;
         let encoded = self.codec.encode(envelope)?;
         let length = u32::try_from(encoded.len()).map_err(|_| RuntimeError::EnvelopeTooLarge {
             actual: encoded.len(),
@@ -897,6 +1199,7 @@ impl Transport for QuicTransport {
     }
 
     fn receive(&mut self) -> Result<WireEnvelope, RuntimeError> {
+        self.require_compact_session()?;
         let receive = &mut self.receive;
         let mut length = [0_u8; 4];
         self.runtime
@@ -995,6 +1298,7 @@ impl EnvelopeCodec {
             WireEncoding::Compact => Self::Compact(CompactWireCodec {
                 conversation: plan.conversation().to_string(),
                 conversation_identity: plan.conversation_identity().to_string(),
+                plan_identity: plan.plan_identity().to_string(),
                 wire: plan.shared_wire_plan(),
             }),
         }
@@ -1005,6 +1309,19 @@ impl EnvelopeCodec {
             Self::Reference => WireEncoding::Reference,
             Self::Compact(_) => WireEncoding::Compact,
         }
+    }
+
+    fn verify_plan(&self, plan: &PreparedPlan) -> Result<(), RuntimeError> {
+        let Self::Compact(codec) = self else {
+            return Ok(());
+        };
+        require_session_field("conversation", &codec.conversation, plan.conversation())?;
+        require_session_field(
+            "conversation_identity",
+            &codec.conversation_identity,
+            plan.conversation_identity(),
+        )?;
+        require_session_field("plan_identity", &codec.plan_identity, plan.plan_identity())
     }
 
     fn encode(&self, envelope: &WireEnvelope) -> Result<Vec<u8>, RuntimeError> {
@@ -1572,6 +1889,7 @@ pub fn run_tcp_plan_demo_with_encoding(
                 WireEncoding::Reference => TcpTransport::from_stream(stream)?,
                 WireEncoding::Compact => TcpTransport::from_stream_compact(stream, plan)?,
             };
+            transport.establish_session(plan, "server", "client")?;
             run_generate_server_plan(plan, &mut transport, token_limit)
         });
         let client_worker = scope.spawn(move || {
@@ -1579,6 +1897,7 @@ pub fn run_tcp_plan_demo_with_encoding(
                 WireEncoding::Reference => TcpTransport::connect(address)?,
                 WireEncoding::Compact => TcpTransport::connect_compact(address, plan)?,
             };
+            transport.establish_session(plan, "client", "server")?;
             run_generate_client_plan(plan, &mut transport, &prompt, cancel_after)
         });
         let client = client_worker
@@ -1638,6 +1957,7 @@ pub fn run_quic_plan_demo_with_encoding(
                 WireEncoding::Reference => listener.accept()?,
                 WireEncoding::Compact => listener.accept_compact(plan)?,
             };
+            transport.establish_session(plan, "server", "client")?;
             run_generate_server_plan(plan, &mut transport, token_limit)
         });
         let client_worker = scope.spawn(move || {
@@ -1647,6 +1967,7 @@ pub fn run_quic_plan_demo_with_encoding(
                     QuicTransport::connect_compact(address, &trusted_certificate, plan)?
                 }
             };
+            transport.establish_session(plan, "client", "server")?;
             run_generate_client_plan(plan, &mut transport, &prompt, cancel_after)
         });
         let client = client_worker
@@ -1895,6 +2216,70 @@ mod tests {
     }
 
     #[test]
+    fn session_preface_rejects_plan_role_and_wire_mismatches() {
+        let plan = PreparedPlan::compile(&conversation()).unwrap();
+        let mut peer = SessionPreface::for_plan(&plan, "server", WireEncoding::Compact).unwrap();
+
+        peer.plan_identity =
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+        let error = peer
+            .verify_peer(&plan, "server", WireEncoding::Compact)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::SessionMismatch {
+                field: "plan_identity",
+                ..
+            }
+        ));
+
+        let peer = SessionPreface::for_plan(&plan, "client", WireEncoding::Compact).unwrap();
+        let error = peer
+            .verify_peer(&plan, "server", WireEncoding::Compact)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::SessionMismatch { field: "role", .. }
+        ));
+
+        let peer = SessionPreface::for_plan(&plan, "server", WireEncoding::Reference).unwrap();
+        let error = peer
+            .verify_peer(&plan, "server", WireEncoding::Compact)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RuntimeError::SessionMismatch { field: "wire", .. }
+        ));
+    }
+
+    #[test]
+    fn session_preface_fixture_matches_the_compiled_plan() {
+        let plan = PreparedPlan::compile(&conversation()).unwrap();
+        let fixture: SessionPreface =
+            serde_json::from_str(include_str!("../examples/session-preface.compact.json")).unwrap();
+        assert_eq!(
+            fixture,
+            SessionPreface::for_plan(&plan, "client", WireEncoding::Compact).unwrap()
+        );
+        assert_eq!(encode_session_preface(&fixture).unwrap().len(), 278);
+    }
+
+    #[test]
+    fn compact_tcp_rejects_frames_before_the_session_preface() {
+        let plan = PreparedPlan::compile(&conversation()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client_stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server_stream, _) = listener.accept().unwrap();
+        drop(server_stream);
+        let mut transport = TcpTransport::from_stream_compact(client_stream, &plan).unwrap();
+        let mut client = EndpointMachine::from_plan(&plan, "client").unwrap();
+        let envelope = client.emit_data(json!({ "text": "blocked" })).unwrap();
+        let error = transport.send(&envelope).unwrap_err();
+        assert!(matches!(error, RuntimeError::SessionRequired("TCP")));
+        assert!(!transport.session_established());
+    }
+
+    #[test]
     fn compact_memory_preserves_explicit_cancellation() {
         let plan = PreparedPlan::compile(&conversation()).unwrap();
         let report = run_memory_plan_demo_with_encoding(
@@ -2065,6 +2450,40 @@ mod tests {
             let client = QuicTransport::connect(address, &untrusted_certificate);
             assert!(matches!(client, Err(RuntimeError::Quic(_))));
             assert!(server.join().unwrap().is_err());
+        });
+    }
+
+    #[test]
+    fn authenticated_quic_preface_rejects_a_different_plan() {
+        let _guard = quic_test_guard();
+        let server_plan = PreparedPlan::compile(&conversation()).unwrap();
+        let mut edited = conversation();
+        if let crate::GlobalState::Send { deadline, .. } = &mut edited.states[0] {
+            *deadline = Some("25ms".to_string());
+        }
+        let client_plan = PreparedPlan::compile(&edited).unwrap();
+        let listener = QuicListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = listener.local_addr().unwrap();
+        let certificate = listener.certificate_der().to_vec();
+
+        std::thread::scope(|scope| {
+            let server = scope.spawn(move || {
+                let mut transport = listener.accept_compact(&server_plan)?;
+                transport.establish_session(&server_plan, "server", "client")
+            });
+            let client = scope.spawn(move || {
+                let mut transport =
+                    QuicTransport::connect_compact(address, &certificate, &client_plan)?;
+                transport.establish_session(&client_plan, "client", "server")
+            });
+            let client = client.join().unwrap();
+            let server = server.join().unwrap();
+            assert!(client.is_err());
+            assert!(server.is_err());
+            assert!(
+                matches!(client, Err(RuntimeError::SessionMismatch { .. }))
+                    || matches!(server, Err(RuntimeError::SessionMismatch { .. }))
+            );
         });
     }
 

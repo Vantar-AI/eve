@@ -62,7 +62,7 @@ The distinction matters:
 
 The dictionary deduplicates matching endpoint actions, sorts them deterministically by state and semantic operation, and assigns dense `u16` IDs starting at one. The sender maps an already checked semantic frame to an ID. The receiver resolves that ID, reconstructs the full semantic frame, and runs the unchanged endpoint checks. Reference and compact sessions must produce identical semantic traces.
 
-Compact mode currently requires both endpoints to possess the same plan before communication. Plan negotiation and a session handshake are not yet implemented. See [Eve Wire v0](wire.md) for the exact envelope and trust boundary.
+Compact mode requires both endpoints to possess the same plan. Before TCP or QUIC frame zero, a versioned session preface checks the conversation identity, plan identity, peer role, and exact encoding with no downgrade fallback. QUIC carries that binding inside its server-authenticated TLS connection; TCP performs only unauthenticated equality checks. See [Eve Wire v0](wire.md) for the exact envelope and trust boundary.
 
 ## Measured boundary
 

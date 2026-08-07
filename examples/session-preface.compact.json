@@ -1,0 +1,8 @@
+{
+  "eve_session": "0.1.0",
+  "conversation": "example.generate",
+  "conversation_identity": "sha256:41c84488dc95551605671ea78046cad98bbdeb9c3ede1d73d7303b6f50a7c0d4",
+  "plan_identity": "sha256:5d66c5bdc25454b7542021da3d5c73ff05d4d3757f1ae90738189799d18f10d1",
+  "role": "client",
+  "wire": "compact"
+}

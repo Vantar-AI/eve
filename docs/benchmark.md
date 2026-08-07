@@ -50,9 +50,12 @@ The checked-transition measurement creates fresh machines and prepares the compa
 
 The benchmark still does not isolate channel transfer, transport latency, throughput, allocation, lookup, or model execution. Compact wire is still JSON and reconstructs owned semantic strings before checking, so this is not a lower bound for a binary or zero-copy implementation.
 
+The memory benchmark does not include the network session preface. A TCP or QUIC session first exchanges one 278-byte JSON preface plus a four-byte length prefix and one acceptance byte in each direction. The acceptance phase waits for both peers to validate, adding one application-level round trip before frame zero. Persistent connection reuse and resumption are not implemented.
+
 Useful next experiments are:
 
-- add an authenticated session handshake that binds peers to the same plan identity;
+- measure the plan-bound preface over persistent and newly established TCP/QUIC connections;
+- add mutual client authentication and replay-resistant session freshness;
 - split state-machine checking, transition lookup, allocation, serialization, and channel transfer;
 - compare the compact JSON experiment with a schema-driven binary payload codec;
 - compare TCP and QUIC against conventional equivalents under controlled network faults;
