@@ -12,6 +12,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 pub const PLAN_FORMAT: &str = "0.1.0";
+pub const COMPACT_WIRE_FORMAT: &str = "compact-json-v0";
 
 #[derive(Debug, Error)]
 pub enum PlanError {
@@ -45,6 +46,43 @@ pub struct EvePlan {
     pub conversation_identity: String,
     pub plan_identity: String,
     pub endpoints: Vec<Arc<Endpoint>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<CompactWirePlan>,
+}
+
+/// The deterministic transition dictionary used by compact Eve Wire sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactWirePlan {
+    pub encoding: String,
+    pub transitions: Vec<WireTransition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireTransition {
+    pub id: u16,
+    pub state: String,
+    #[serde(flatten)]
+    pub operation: WireOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum WireOperation {
+    Data {
+        from: String,
+        to: String,
+        message: String,
+    },
+    Select {
+        by: String,
+        label: String,
+    },
+    Cancel {
+        from: String,
+        to: String,
+        scope: String,
+    },
 }
 
 /// A plan whose digest and structural references have been verified for session use.
@@ -54,6 +92,7 @@ pub struct PreparedPlan {
     conversation_identity: String,
     plan_identity: String,
     endpoints: Vec<Arc<Endpoint>>,
+    wire: Arc<CompactWirePlan>,
 }
 
 impl EvePlan {
@@ -62,12 +101,15 @@ impl EvePlan {
         let conversation_identity = conversation_identity_validated(conversation)?;
         let mut endpoints = project_validated(conversation);
         endpoints.sort_by(|left, right| left.role.cmp(&right.role));
+        let endpoints = endpoints.into_iter().map(Arc::new).collect::<Vec<_>>();
+        let wire = derive_wire_plan(&endpoints)?;
         let mut plan = Self {
             eve_plan: PLAN_FORMAT.to_string(),
             conversation: conversation.module.id.clone(),
             conversation_identity,
             plan_identity: String::new(),
-            endpoints: endpoints.into_iter().map(Arc::new).collect(),
+            endpoints,
+            wire: Some(wire),
         };
         plan.plan_identity = plan.calculate_identity()?;
         plan.verify()?;
@@ -114,6 +156,14 @@ impl EvePlan {
                 calculated,
             });
         }
+        if let Some(wire) = &self.wire {
+            let expected = derive_wire_plan(&self.endpoints)?;
+            if wire != &expected {
+                return Err(PlanError::Invalid(
+                    "compact wire transition table is not the deterministic projection".to_string(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -123,16 +173,20 @@ impl EvePlan {
 
     pub fn prepare(&self) -> Result<PreparedPlan, PlanError> {
         self.verify()?;
-        Ok(self.prepared())
+        self.prepared()
     }
 
-    fn prepared(&self) -> PreparedPlan {
-        PreparedPlan {
+    fn prepared(&self) -> Result<PreparedPlan, PlanError> {
+        Ok(PreparedPlan {
             conversation: self.conversation.clone(),
             conversation_identity: self.conversation_identity.clone(),
             plan_identity: self.plan_identity.clone(),
             endpoints: self.endpoints.clone(),
-        }
+            wire: Arc::new(match &self.wire {
+                Some(wire) => wire.clone(),
+                None => derive_wire_plan(&self.endpoints)?,
+            }),
+        })
     }
 
     fn calculate_identity(&self) -> Result<String, PlanError> {
@@ -142,6 +196,8 @@ impl EvePlan {
             conversation: &'a str,
             conversation_identity: &'a str,
             endpoints: &'a [Arc<Endpoint>],
+            #[serde(skip_serializing_if = "Option::is_none")]
+            wire: Option<&'a CompactWirePlan>,
         }
 
         let encoded = serde_json::to_vec(&SemanticPlan {
@@ -149,6 +205,7 @@ impl EvePlan {
             conversation: &self.conversation,
             conversation_identity: &self.conversation_identity,
             endpoints: &self.endpoints,
+            wire: self.wire.as_ref(),
         })?;
         Ok(sha256_identity(&encoded))
     }
@@ -156,7 +213,7 @@ impl EvePlan {
 
 impl PreparedPlan {
     pub fn compile(conversation: &Conversation) -> Result<Self, PlanError> {
-        Ok(EvePlan::compile(conversation)?.prepared())
+        EvePlan::compile(conversation)?.prepared()
     }
 
     pub fn conversation(&self) -> &str {
@@ -178,6 +235,110 @@ impl PreparedPlan {
     pub fn endpoint(&self, role: &str) -> Option<&Arc<Endpoint>> {
         self.endpoints.iter().find(|endpoint| endpoint.role == role)
     }
+
+    pub fn wire_plan(&self) -> &CompactWirePlan {
+        &self.wire
+    }
+
+    pub(crate) fn shared_wire_plan(&self) -> Arc<CompactWirePlan> {
+        Arc::clone(&self.wire)
+    }
+}
+
+fn derive_wire_plan(endpoints: &[Arc<Endpoint>]) -> Result<CompactWirePlan, PlanError> {
+    let mut transitions = BTreeSet::<(String, WireOperation)>::new();
+    for endpoint in endpoints {
+        for state in &endpoint.states {
+            let state_id = state.id().to_string();
+            match state {
+                EndpointState::Send { to, message, .. } => {
+                    transitions.insert((
+                        state_id,
+                        WireOperation::Data {
+                            from: endpoint.role.clone(),
+                            to: to.clone(),
+                            message: message.clone(),
+                        },
+                    ));
+                }
+                EndpointState::Receive { from, message, .. } => {
+                    transitions.insert((
+                        state_id,
+                        WireOperation::Data {
+                            from: from.clone(),
+                            to: endpoint.role.clone(),
+                            message: message.clone(),
+                        },
+                    ));
+                }
+                EndpointState::Select { branches, .. } => {
+                    for label in branches.keys() {
+                        transitions.insert((
+                            state_id.clone(),
+                            WireOperation::Select {
+                                by: endpoint.role.clone(),
+                                label: label.clone(),
+                            },
+                        ));
+                    }
+                }
+                EndpointState::Branch { from, branches, .. } => {
+                    for label in branches.keys() {
+                        transitions.insert((
+                            state_id.clone(),
+                            WireOperation::Select {
+                                by: from.clone(),
+                                label: label.clone(),
+                            },
+                        ));
+                    }
+                }
+                EndpointState::SendCancel { to, scope, .. } => {
+                    transitions.insert((
+                        state_id,
+                        WireOperation::Cancel {
+                            from: endpoint.role.clone(),
+                            to: to.clone(),
+                            scope: scope.clone(),
+                        },
+                    ));
+                }
+                EndpointState::ReceiveCancel { from, scope, .. } => {
+                    transitions.insert((
+                        state_id,
+                        WireOperation::Cancel {
+                            from: from.clone(),
+                            to: endpoint.role.clone(),
+                            scope: scope.clone(),
+                        },
+                    ));
+                }
+                EndpointState::End { .. } | EndpointState::Fail { .. } => {}
+            }
+        }
+    }
+
+    let transitions = transitions
+        .into_iter()
+        .enumerate()
+        .map(|(index, (state, operation))| {
+            let id = u16::try_from(index + 1).map_err(|_| {
+                PlanError::Invalid(
+                    "compact wire supports at most 65535 semantic transitions".to_string(),
+                )
+            })?;
+            Ok(WireTransition {
+                id,
+                state,
+                operation,
+            })
+        })
+        .collect::<Result<Vec<_>, PlanError>>()?;
+
+    Ok(CompactWirePlan {
+        encoding: COMPACT_WIRE_FORMAT.to_string(),
+        transitions,
+    })
 }
 
 pub fn conversation_identity(conversation: &Conversation) -> Result<String, PlanError> {
@@ -389,5 +550,43 @@ mod tests {
             EvePlan::compile(&original).unwrap().plan_identity,
             EvePlan::compile(&edited).unwrap().plan_identity
         );
+    }
+
+    #[test]
+    fn compact_transition_ids_are_deterministic_and_dense() {
+        let first = EvePlan::compile(&conversation()).unwrap();
+        let second = EvePlan::compile(&conversation()).unwrap();
+        let first_wire = first.wire.as_ref().unwrap();
+        assert_eq!(first_wire, second.wire.as_ref().unwrap());
+        assert_eq!(first_wire.encoding, COMPACT_WIRE_FORMAT);
+        assert_eq!(first_wire.transitions.len(), 7);
+        assert_eq!(
+            first_wire
+                .transitions
+                .iter()
+                .map(|transition| transition.id)
+                .collect::<Vec<_>>(),
+            (1..=7).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn prepared_legacy_plan_derives_the_compact_dictionary() {
+        let mut legacy = EvePlan::compile(&conversation()).unwrap();
+        legacy.wire = None;
+        legacy.plan_identity = legacy.calculate_identity().unwrap();
+        legacy.verify().unwrap();
+        let prepared = legacy.prepare().unwrap();
+        assert_eq!(prepared.wire_plan().encoding, COMPACT_WIRE_FORMAT);
+        assert_eq!(prepared.wire_plan().transitions.len(), 7);
+    }
+
+    #[test]
+    fn compact_dictionary_rejects_a_recalculated_noncanonical_table() {
+        let mut plan = EvePlan::compile(&conversation()).unwrap();
+        plan.wire.as_mut().unwrap().transitions.swap(0, 1);
+        plan.plan_identity = plan.calculate_identity().unwrap();
+        let error = plan.verify().unwrap_err();
+        assert!(matches!(error, PlanError::Invalid(_)));
     }
 }

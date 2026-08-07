@@ -1,0 +1,38 @@
+{
+  "benchmark": "request-token-done/json-channels/v0",
+  "config": {
+    "eve_version": "0.1.0",
+    "iterations": 500,
+    "warmup_iterations": 50,
+    "tokens": 3,
+    "prompt_bytes": 33,
+    "build_profile": "release",
+    "target_os": "macos",
+    "target_arch": "aarch64"
+  },
+  "eve_compile": { "min_ns": 49750, "median_ns": 51583, "mean_ns": 54312, "p95_ns": 66834, "max_ns": 135542 },
+  "eve_session_startup": { "min_ns": 83, "median_ns": 125, "mean_ns": 128, "p95_ns": 167, "max_ns": 375 },
+  "eve_checked_transition": { "min_ns": 2333, "median_ns": 2417, "mean_ns": 2518, "p95_ns": 2500, "max_ns": 19542 },
+  "eve_compact_checked_transition": { "min_ns": 1750, "median_ns": 1833, "mean_ns": 1889, "p95_ns": 1917, "max_ns": 10875 },
+  "baseline_json_transition": { "min_ns": 208, "median_ns": 250, "mean_ns": 281, "p95_ns": 292, "max_ns": 1709 },
+  "eve_cold": { "min_ns": 131833, "median_ns": 145875, "mean_ns": 159423, "p95_ns": 235542, "max_ns": 639958 },
+  "eve_warm": { "min_ns": 81000, "median_ns": 92542, "mean_ns": 103316, "p95_ns": 166750, "max_ns": 421916 },
+  "eve_compact_warm": { "min_ns": 72792, "median_ns": 83583, "mean_ns": 93246, "p95_ns": 154584, "max_ns": 320250 },
+  "conventional_baseline": { "min_ns": 45750, "median_ns": 55209, "mean_ns": 62233, "p95_ns": 112542, "max_ns": 184208 },
+  "cold_median_overhead_ratio": 2.642232244742705,
+  "warm_median_overhead_ratio": 1.6762122117770653,
+  "compact_warm_median_overhead_ratio": 1.513937944900288,
+  "warm_speedup_over_cold": 1.5763112964924035,
+  "compact_speedup_over_reference": 1.1071868681430435,
+  "transition_median_overhead_ratio": 9.668,
+  "compact_transition_median_overhead_ratio": 7.332,
+  "notes": [
+    "This is a local reference-runtime microbenchmark, not a production performance claim.",
+    "Every full-workload variant includes thread creation, channels, JSON encoding, and JSON decoding in every sample.",
+    "Eve cold includes validation, identity, projection, session startup, state-machine checks, and full wire envelopes.",
+    "Eve warm reuses a verified plan but still includes session startup, state-machine checks, and full wire envelopes.",
+    "Eve compact warm reuses the same verified plan and exchanges transition ID, sequence, and optional payload instead of repeated semantic strings.",
+    "Checked-transition samples exclude session creation and channels; they include two local machine transitions plus reference or compact envelope JSON encoding and decoding.",
+    "Run the release binary on an otherwise idle machine and compare saved reports, not isolated runs."
+  ]
+}

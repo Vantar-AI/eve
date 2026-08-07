@@ -31,6 +31,9 @@
       "items": {
         "$ref": "#/$defs/endpoint"
       }
+    },
+    "wire": {
+      "$ref": "#/$defs/compactWirePlan"
     }
   },
   "$defs": {
@@ -71,6 +74,82 @@
           "type": "null"
         }
       ]
+    },
+    "compactWirePlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "encoding",
+        "transitions"
+      ],
+      "properties": {
+        "encoding": {
+          "const": "compact-json-v0"
+        },
+        "transitions": {
+          "type": "array",
+          "maxItems": 65535,
+          "items": {
+            "$ref": "#/$defs/wireTransition"
+          }
+        }
+      }
+    },
+    "wireTransition": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/wireDataTransition"
+        },
+        {
+          "$ref": "#/$defs/wireSelectTransition"
+        },
+        {
+          "$ref": "#/$defs/wireCancelTransition"
+        }
+      ]
+    },
+    "wireTransitionId": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "wireDataTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "op", "from", "to", "message"],
+      "properties": {
+        "id": { "$ref": "#/$defs/wireTransitionId" },
+        "state": { "$ref": "#/$defs/id" },
+        "op": { "const": "data" },
+        "from": { "$ref": "#/$defs/id" },
+        "to": { "$ref": "#/$defs/id" },
+        "message": { "$ref": "#/$defs/id" }
+      }
+    },
+    "wireSelectTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "op", "by", "label"],
+      "properties": {
+        "id": { "$ref": "#/$defs/wireTransitionId" },
+        "state": { "$ref": "#/$defs/id" },
+        "op": { "const": "select" },
+        "by": { "$ref": "#/$defs/id" },
+        "label": { "$ref": "#/$defs/id" }
+      }
+    },
+    "wireCancelTransition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "state", "op", "from", "to", "scope"],
+      "properties": {
+        "id": { "$ref": "#/$defs/wireTransitionId" },
+        "state": { "$ref": "#/$defs/id" },
+        "op": { "const": "cancel" },
+        "from": { "$ref": "#/$defs/id" },
+        "to": { "$ref": "#/$defs/id" },
+        "scope": { "$ref": "#/$defs/id" }
+      }
     },
     "endpoint": {
       "type": "object",

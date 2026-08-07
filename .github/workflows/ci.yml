@@ -39,3 +39,4 @@ jobs:
         run: |
           cargo run --locked -- compile
           check-jsonschema --schemafile spec/eve-plan-v0.schema.json build/generate.eveplan.json
+          cargo run --locked -- run-plan build/generate.eveplan.json --wire compact --transport memory

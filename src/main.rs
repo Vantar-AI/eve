@@ -2,9 +2,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use eve::benchmark::run_reference_benchmark;
 use eve::plan::EvePlan;
 use eve::runtime::{
-    FaultOperation, FaultPlan, QuicListener, QuicTransport, TcpTransport, run_generate_client,
-    run_generate_server, run_memory_demo, run_memory_fault_demo, run_memory_plan_demo,
-    run_quic_demo, run_quic_plan_demo, run_tcp_demo, run_tcp_plan_demo,
+    FaultOperation, FaultPlan, QuicListener, QuicTransport, TcpTransport, WireEncoding,
+    run_generate_client, run_generate_server, run_memory_demo, run_memory_fault_demo,
+    run_memory_plan_demo_with_encoding, run_quic_demo, run_quic_plan_demo_with_encoding,
+    run_tcp_demo, run_tcp_plan_demo_with_encoding,
 };
 use eve::{Conversation, Frame, project, validate, verify_trace};
 use serde::de::DeserializeOwned;
@@ -51,6 +52,9 @@ enum Command {
         plan: PathBuf,
         #[arg(long, value_enum, default_value_t = DemoTransport::Memory)]
         transport: DemoTransport,
+        /// Use self-describing envelopes or compact transition IDs from the plan.
+        #[arg(long, value_enum, default_value_t = WireEncodingArg::Reference)]
+        wire: WireEncodingArg,
         #[arg(
             long,
             default_value = "Explain why the conversation is the computation."
@@ -191,6 +195,21 @@ enum FaultOperationArg {
     Receive,
 }
 
+#[derive(Clone, Debug, ValueEnum)]
+enum WireEncodingArg {
+    Reference,
+    Compact,
+}
+
+impl From<WireEncodingArg> for WireEncoding {
+    fn from(encoding: WireEncodingArg) -> Self {
+        match encoding {
+            WireEncodingArg::Reference => Self::Reference,
+            WireEncodingArg::Compact => Self::Compact,
+        }
+    }
+}
+
 impl From<FaultOperationArg> for FaultOperation {
     fn from(operation: FaultOperationArg) -> Self {
         match operation {
@@ -239,28 +258,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             fs::write(&out, serde_json::to_vec_pretty(&plan)?)?;
             println!(
-                "compiled {} as {} ({} endpoints) to {}",
+                "compiled {} as {} ({} endpoints, {} compact transitions) to {}",
                 plan.conversation,
                 plan.plan_identity,
                 plan.endpoints.len(),
+                plan.wire.as_ref().map_or(0, |wire| wire.transitions.len()),
                 out.display()
             );
         }
         Command::RunPlan {
             plan,
             transport,
+            wire,
             prompt,
             tokens,
             cancel_after,
         } => {
             let artifact: EvePlan = read_json(&plan)?;
             let plan = artifact.prepare()?;
+            let wire = wire.into();
             let report = match transport {
                 DemoTransport::Memory => {
-                    run_memory_plan_demo(&plan, &prompt, tokens, cancel_after)?
+                    run_memory_plan_demo_with_encoding(&plan, &prompt, tokens, cancel_after, wire)?
                 }
-                DemoTransport::Tcp => run_tcp_plan_demo(&plan, &prompt, tokens, cancel_after)?,
-                DemoTransport::Quic => run_quic_plan_demo(&plan, &prompt, tokens, cancel_after)?,
+                DemoTransport::Tcp => {
+                    run_tcp_plan_demo_with_encoding(&plan, &prompt, tokens, cancel_after, wire)?
+                }
+                DemoTransport::Quic => {
+                    run_quic_plan_demo_with_encoding(&plan, &prompt, tokens, cancel_after, wire)?
+                }
             };
             println!("{}", serde_json::to_string_pretty(&report)?);
         }

@@ -6,7 +6,10 @@
 
 use crate::Conversation;
 use crate::plan::{EvePlan, PlanError, PreparedPlan};
-use crate::runtime::{EndpointMachine, RuntimeError, WireEnvelope, run_memory_plan_demo};
+use crate::runtime::{
+    EndpointMachine, PreparedCompactRoundTrip, RuntimeError, WireEncoding, WireEnvelope,
+    run_memory_plan_demo, run_memory_plan_demo_with_encoding,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::hint::black_box;
@@ -58,14 +61,19 @@ pub struct BenchmarkReport {
     pub eve_compile: BenchmarkStats,
     pub eve_session_startup: BenchmarkStats,
     pub eve_checked_transition: BenchmarkStats,
+    pub eve_compact_checked_transition: BenchmarkStats,
     pub baseline_json_transition: BenchmarkStats,
     pub eve_cold: BenchmarkStats,
     pub eve_warm: BenchmarkStats,
+    pub eve_compact_warm: BenchmarkStats,
     pub conventional_baseline: BenchmarkStats,
     pub cold_median_overhead_ratio: f64,
     pub warm_median_overhead_ratio: f64,
+    pub compact_warm_median_overhead_ratio: f64,
     pub warm_speedup_over_cold: f64,
+    pub compact_speedup_over_reference: f64,
     pub transition_median_overhead_ratio: f64,
+    pub compact_transition_median_overhead_ratio: f64,
     pub notes: Vec<&'static str>,
 }
 
@@ -91,59 +99,76 @@ pub fn run_reference_benchmark(
         run_compile_iteration(conversation)?;
         run_eve_cold_iteration(conversation, prompt, tokens)?;
         run_eve_warm_iteration(&plan, prompt, tokens)?;
+        run_eve_compact_warm_iteration(&plan, prompt, tokens)?;
         run_baseline_iteration(prompt, tokens)?;
         measure_session_startup(&plan)?;
         measure_eve_checked_transition(&plan, prompt)?;
+        measure_eve_compact_checked_transition(&plan, prompt)?;
         measure_baseline_json_transition(prompt)?;
     }
 
     let mut compile_samples = Vec::with_capacity(iterations);
     let mut session_samples = Vec::with_capacity(iterations);
     let mut eve_transition_samples = Vec::with_capacity(iterations);
+    let mut eve_compact_transition_samples = Vec::with_capacity(iterations);
     let mut baseline_transition_samples = Vec::with_capacity(iterations);
     let mut cold_samples = Vec::with_capacity(iterations);
     let mut warm_samples = Vec::with_capacity(iterations);
+    let mut compact_warm_samples = Vec::with_capacity(iterations);
     let mut baseline_samples = Vec::with_capacity(iterations);
     for index in 0..iterations {
         // Rotate execution order to reduce a simple first/last ordering bias.
-        for offset in 0..4 {
-            match (index + offset) % 4 {
+        for offset in 0..5 {
+            match (index + offset) % 5 {
                 0 => compile_samples.push(measure(|| run_compile_iteration(conversation))?),
                 1 => cold_samples.push(measure(|| {
                     run_eve_cold_iteration(conversation, prompt, tokens)
                 })?),
                 2 => warm_samples.push(measure(|| run_eve_warm_iteration(&plan, prompt, tokens))?),
-                3 => baseline_samples.push(measure(|| run_baseline_iteration(prompt, tokens))?),
-                _ => unreachable!("modulo four is in range"),
+                3 => compact_warm_samples.push(measure(|| {
+                    run_eve_compact_warm_iteration(&plan, prompt, tokens)
+                })?),
+                4 => baseline_samples.push(measure(|| run_baseline_iteration(prompt, tokens))?),
+                _ => unreachable!("modulo five is in range"),
             }
         }
     }
 
     for index in 0..iterations {
         session_samples.push(measure_session_startup(&plan)?);
-        if index % 2 == 0 {
-            eve_transition_samples.push(measure_eve_checked_transition(&plan, prompt)?);
-            baseline_transition_samples.push(measure_baseline_json_transition(prompt)?);
-        } else {
-            baseline_transition_samples.push(measure_baseline_json_transition(prompt)?);
-            eve_transition_samples.push(measure_eve_checked_transition(&plan, prompt)?);
+        for offset in 0..3 {
+            match (index + offset) % 3 {
+                0 => eve_transition_samples.push(measure_eve_checked_transition(&plan, prompt)?),
+                1 => eve_compact_transition_samples
+                    .push(measure_eve_compact_checked_transition(&plan, prompt)?),
+                2 => baseline_transition_samples.push(measure_baseline_json_transition(prompt)?),
+                _ => unreachable!("modulo three is in range"),
+            }
         }
     }
 
     let eve_compile = stats(compile_samples);
     let eve_session_startup = stats(session_samples);
     let eve_checked_transition = stats(eve_transition_samples);
+    let eve_compact_checked_transition = stats(eve_compact_transition_samples);
     let baseline_json_transition = stats(baseline_transition_samples);
     let eve_cold = stats(cold_samples);
     let eve_warm = stats(warm_samples);
+    let eve_compact_warm = stats(compact_warm_samples);
     let conventional_baseline = stats(baseline_samples);
     let cold_median_overhead_ratio =
         eve_cold.median_ns as f64 / conventional_baseline.median_ns.max(1) as f64;
     let warm_median_overhead_ratio =
         eve_warm.median_ns as f64 / conventional_baseline.median_ns.max(1) as f64;
+    let compact_warm_median_overhead_ratio =
+        eve_compact_warm.median_ns as f64 / conventional_baseline.median_ns.max(1) as f64;
     let warm_speedup_over_cold = eve_cold.median_ns as f64 / eve_warm.median_ns.max(1) as f64;
+    let compact_speedup_over_reference =
+        eve_warm.median_ns as f64 / eve_compact_warm.median_ns.max(1) as f64;
     let transition_median_overhead_ratio =
         eve_checked_transition.median_ns as f64 / baseline_json_transition.median_ns.max(1) as f64;
+    let compact_transition_median_overhead_ratio = eve_compact_checked_transition.median_ns as f64
+        / baseline_json_transition.median_ns.max(1) as f64;
 
     Ok(BenchmarkReport {
         benchmark: "request-token-done/json-channels/v0",
@@ -164,20 +189,26 @@ pub fn run_reference_benchmark(
         eve_compile,
         eve_session_startup,
         eve_checked_transition,
+        eve_compact_checked_transition,
         baseline_json_transition,
         eve_cold,
         eve_warm,
+        eve_compact_warm,
         conventional_baseline,
         cold_median_overhead_ratio,
         warm_median_overhead_ratio,
+        compact_warm_median_overhead_ratio,
         warm_speedup_over_cold,
+        compact_speedup_over_reference,
         transition_median_overhead_ratio,
+        compact_transition_median_overhead_ratio,
         notes: vec![
             "This is a local reference-runtime microbenchmark, not a production performance claim.",
-            "Both variants include thread creation, channels, JSON encoding, and JSON decoding in every sample.",
+            "Every full-workload variant includes thread creation, channels, JSON encoding, and JSON decoding in every sample.",
             "Eve cold includes validation, identity, projection, session startup, state-machine checks, and full wire envelopes.",
             "Eve warm reuses a verified plan but still includes session startup, state-machine checks, and full wire envelopes.",
-            "Checked-transition samples exclude session creation and channels; they include two local machine transitions plus Eve envelope JSON encoding and decoding.",
+            "Eve compact warm reuses the same verified plan and exchanges transition ID, sequence, and optional payload instead of repeated semantic strings.",
+            "Checked-transition samples exclude session creation and channels; they include two local machine transitions plus reference or compact envelope JSON encoding and decoding.",
             "Run the release binary on an otherwise idle machine and compare saved reports, not isolated runs.",
         ],
     })
@@ -220,6 +251,30 @@ fn run_eve_warm_iteration(
     Ok(())
 }
 
+fn run_eve_compact_warm_iteration(
+    plan: &PreparedPlan,
+    prompt: &str,
+    tokens: usize,
+) -> Result<(), BenchmarkError> {
+    let report = black_box(run_memory_plan_demo_with_encoding(
+        plan,
+        prompt,
+        tokens,
+        None,
+        WireEncoding::Compact,
+    )?);
+    if !report.client.successful
+        || !report.server.successful
+        || report.client.tokens.len() != tokens
+        || report.server.tokens.len() != tokens
+    {
+        return Err(BenchmarkError::Protocol(
+            "Eve compact iteration did not complete the requested workload".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn measure_session_startup(plan: &PreparedPlan) -> Result<u64, BenchmarkError> {
     let start = Instant::now();
     let client = EndpointMachine::from_plan(plan, "client")?;
@@ -238,6 +293,21 @@ fn measure_eve_checked_transition(
     let envelope = client.emit_data(json!({ "text": prompt }))?;
     let encoded = serde_json::to_vec(&envelope)?;
     let decoded: WireEnvelope = serde_json::from_slice(&encoded)?;
+    let frame = server.accept(decoded)?;
+    black_box(frame);
+    Ok(elapsed_ns(start))
+}
+
+fn measure_eve_compact_checked_transition(
+    plan: &PreparedPlan,
+    prompt: &str,
+) -> Result<u64, BenchmarkError> {
+    let mut client = EndpointMachine::from_plan(plan, "client")?;
+    let mut server = EndpointMachine::from_plan(plan, "server")?;
+    let compact = PreparedCompactRoundTrip::new(plan);
+    let start = Instant::now();
+    let envelope = client.emit_data(json!({ "text": prompt }))?;
+    let decoded = compact.execute(&envelope)?;
     let frame = server.accept(decoded)?;
     black_box(frame);
     Ok(elapsed_ns(start))
@@ -411,20 +481,25 @@ mod tests {
     }
 
     #[test]
-    fn benchmark_executes_both_equivalent_workloads() {
+    fn benchmark_executes_all_equivalent_workloads() {
         let report = run_reference_benchmark(&example(), "benchmark", 2, 3, 1).unwrap();
         assert_eq!(report.config.iterations, 3);
         assert_eq!(report.config.tokens, 2);
         assert!(report.eve_compile.median_ns > 0);
         assert!(report.eve_session_startup.median_ns > 0);
         assert!(report.eve_checked_transition.median_ns > 0);
+        assert!(report.eve_compact_checked_transition.median_ns > 0);
         assert!(report.baseline_json_transition.median_ns > 0);
         assert!(report.eve_cold.median_ns > 0);
         assert!(report.eve_warm.median_ns > 0);
+        assert!(report.eve_compact_warm.median_ns > 0);
         assert!(report.conventional_baseline.median_ns > 0);
         assert!(report.cold_median_overhead_ratio.is_finite());
         assert!(report.warm_median_overhead_ratio.is_finite());
+        assert!(report.compact_warm_median_overhead_ratio.is_finite());
         assert!(report.warm_speedup_over_cold.is_finite());
+        assert!(report.compact_speedup_over_reference.is_finite());
         assert!(report.transition_median_overhead_ratio.is_finite());
+        assert!(report.compact_transition_median_overhead_ratio.is_finite());
     }
 }

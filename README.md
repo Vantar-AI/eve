@@ -6,7 +6,7 @@
 
 **The graph is the program.** Compile computation, communication, placement, and evolution into one executable plan.
 
-[RFC-0002: Conversation](rfcs/0002-conversation-is-the-computation.md) · [RFC-0001: Kernel](rfcs/0001-eve-language-kernel.md) · [Plan](docs/plan.md) · [Runtime](docs/runtime.md) · [Benchmark](docs/benchmark.md) · [Vision](docs/vision.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md)
+[RFC-0002: Conversation](rfcs/0002-conversation-is-the-computation.md) · [RFC-0001: Kernel](rfcs/0001-eve-language-kernel.md) · [Plan](docs/plan.md) · [Wire](docs/wire.md) · [Runtime](docs/runtime.md) · [Benchmark](docs/benchmark.md) · [Vision](docs/vision.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md)
 
 </div>
 
@@ -76,6 +76,10 @@ cargo run -- compile examples/generate.eveconv.json
 # Start lightweight sessions from that plan over any implemented transport
 cargo run -- run-plan build/generate.eveplan.json --transport memory
 
+# Exchange compact transition IDs while preserving the same semantic trace
+cargo run -- run-plan build/generate.eveplan.json \
+  --wire compact --transport quic
+
 # Accept a valid request → token → cancel conversation
 cargo run -- verify-trace \
   examples/generate.eveconv.json \
@@ -104,15 +108,15 @@ cargo run --release --locked -- benchmark \
 cargo test
 ```
 
-Projection produces `build/endpoints/client.endpoint.json` and `server.endpoint.json`. Compilation produces `build/generate.eveplan.json`: a verified, deterministic artifact containing both immutable endpoint graphs. New sessions share those graphs instead of repeating validation and projection. See [Eve Plan v0](docs/plan.md).
+Projection produces `build/endpoints/client.endpoint.json` and `server.endpoint.json`. Compilation produces `build/generate.eveplan.json`: a verified, deterministic artifact containing both immutable endpoint graphs and a compact transition dictionary. New sessions share those graphs instead of repeating validation and projection. See [Eve Plan v0](docs/plan.md) and [Eve Wire v0](docs/wire.md).
 
 The invalid trace in `examples/traces/generate-wrong-order.invalid.json` demonstrates the central property: a `token` message has the correct data type, but Eve rejects it when the server has not first selected the `token` conversation branch.
 
-The runtime derives both endpoints from the same graph. Every wire envelope carries the experimental SHA-256 semantic identity, expected state, and monotonic sequence. A demo reports whether both roles observed the same semantic trace even when the transport plan changes.
+The runtime derives both endpoints from the same graph. Reference envelopes carry the experimental SHA-256 semantic identity, expected state, and monotonic sequence. The compact path establishes those semantics from the verified plan, then sends only a transition ID, sequence, and optional payload. A demo reports whether both roles observed the same semantic trace even when the transport or encoding changes.
 
 Transport closure, timeout, reset, unreachable, and uncertainty are declared branches rather than untyped Rust errors. The deterministic fault demo can fail an exact role, operation, and one-based occurrence. An injected server timeout can produce `transport.timeout` locally while the peer records `transport.uncertain`; Eve does not pretend a partition gives both roles identical knowledge.
 
-The Plan v0 benchmark makes both the gain and remaining cost explicit. Creating two plan-backed sessions took a 125 ns median. Warm whole-exchange execution was 74.1 µs versus 114.5 µs cold and 41.8 µs for the hand-written baseline. The 1.77× warm overhead misses the provisional 1.25× target; isolated checked transitions identify the full JSON envelope as the next bottleneck. These are optimization evidence, not general performance claims; see [the benchmark design and limitations](docs/benchmark.md).
+The compact-wire benchmark makes both the gain and remaining cost explicit. Creating two plan-backed sessions took a 125 ns median. Compact transition encoding improved the isolated Eve transition from 2.417 µs to 1.833 µs; warm whole-exchange execution improved from 92.5 µs to 83.6 µs. Compact Eve remained 1.51× the 55.2 µs hand-written baseline, missing the provisional 1.25× target. These are optimization evidence, not general performance claims; see [the benchmark design and limitations](docs/benchmark.md).
 
 To run the endpoints as separate processes:
 
@@ -181,6 +185,7 @@ docs/
   design.md          Principles, semantic model, and non-goals
   architecture.md    Proposed compiler and runtime layers
   plan.md            Reusable Eve Plan v0 artifact and session boundary
+  wire.md            Reference and compact Eve Wire encodings
   runtime.md         Executable memory/TCP reference experiment
   benchmark.md       Reproducible conventional-baseline microbenchmark
   language.md        Illustrative language surface

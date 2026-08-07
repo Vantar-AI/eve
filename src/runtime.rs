@@ -1,4 +1,4 @@
-use crate::plan::{PlanError, PreparedPlan};
+use crate::plan::{CompactWirePlan, PlanError, PreparedPlan, WireOperation, WireTransition};
 use crate::{Conversation, Endpoint, EndpointState, Frame};
 use rcgen::CertifiedKey;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
@@ -30,6 +30,38 @@ pub struct WireEnvelope {
     pub frame: Frame,
 }
 
+/// Selects between the self-describing reference envelope and the plan-backed compact envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WireEncoding {
+    Reference,
+    Compact,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompactEnvelope {
+    #[serde(rename = "t")]
+    transition: u16,
+    #[serde(rename = "q")]
+    sequence: u64,
+    #[serde(rename = "p", default, skip_serializing_if = "Option::is_none")]
+    payload: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct CompactWireCodec {
+    conversation: String,
+    conversation_identity: String,
+    wire: Arc<CompactWirePlan>,
+}
+
+#[derive(Debug, Clone)]
+enum EnvelopeCodec {
+    Reference,
+    Compact(CompactWireCodec),
+}
+
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     #[error(transparent)]
@@ -38,6 +70,8 @@ pub enum RuntimeError {
     UnknownRole(String),
     #[error("wire codec error: {0}")]
     Codec(#[from] serde_json::Error),
+    #[error("compact Eve Wire error: {0}")]
+    CompactWire(String),
     #[error("transport I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("{0} transport closed before the conversation completed")]
@@ -560,30 +594,44 @@ impl<T: Transport> Transport for FaultInjectingTransport<T> {
 pub struct MemoryTransport {
     outbound: Option<Sender<Vec<u8>>>,
     inbound: Option<Receiver<Vec<u8>>>,
+    codec: EnvelopeCodec,
 }
 
 pub fn memory_pair() -> (MemoryTransport, MemoryTransport) {
+    memory_pair_with_codec(EnvelopeCodec::Reference)
+}
+
+pub fn memory_pair_compact(plan: &PreparedPlan) -> (MemoryTransport, MemoryTransport) {
+    memory_pair_with_codec(EnvelopeCodec::for_plan(WireEncoding::Compact, plan))
+}
+
+fn memory_pair_with_codec(codec: EnvelopeCodec) -> (MemoryTransport, MemoryTransport) {
     let (client_to_server_tx, client_to_server_rx) = mpsc::channel();
     let (server_to_client_tx, server_to_client_rx) = mpsc::channel();
     (
         MemoryTransport {
             outbound: Some(client_to_server_tx),
             inbound: Some(server_to_client_rx),
+            codec: codec.clone(),
         },
         MemoryTransport {
             outbound: Some(server_to_client_tx),
             inbound: Some(client_to_server_rx),
+            codec,
         },
     )
 }
 
 impl Transport for MemoryTransport {
     fn plan(&self) -> &'static str {
-        "memory"
+        match self.codec.encoding() {
+            WireEncoding::Reference => "memory",
+            WireEncoding::Compact => "memory+compact",
+        }
     }
 
     fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
-        let encoded = encode_envelope(envelope)?;
+        let encoded = self.codec.encode(envelope)?;
         self.outbound
             .as_ref()
             .ok_or(RuntimeError::TransportClosed("memory"))?
@@ -598,7 +646,7 @@ impl Transport for MemoryTransport {
             .ok_or(RuntimeError::TransportClosed("memory"))?
             .recv()
             .map_err(|_| RuntimeError::TransportClosed("memory"))?;
-        decode_envelope(&encoded)
+        self.codec.decode(&encoded)
     }
 
     fn abort(&mut self) {
@@ -609,6 +657,7 @@ impl Transport for MemoryTransport {
 
 pub struct TcpTransport {
     stream: TcpStream,
+    codec: EnvelopeCodec,
 }
 
 impl TcpTransport {
@@ -616,21 +665,45 @@ impl TcpTransport {
         Self::from_stream(TcpStream::connect(address)?)
     }
 
+    pub fn connect_compact(address: SocketAddr, plan: &PreparedPlan) -> Result<Self, RuntimeError> {
+        Self::from_stream_with_codec(
+            TcpStream::connect(address)?,
+            EnvelopeCodec::for_plan(WireEncoding::Compact, plan),
+        )
+    }
+
     pub fn from_stream(stream: TcpStream) -> Result<Self, RuntimeError> {
+        Self::from_stream_with_codec(stream, EnvelopeCodec::Reference)
+    }
+
+    pub fn from_stream_compact(
+        stream: TcpStream,
+        plan: &PreparedPlan,
+    ) -> Result<Self, RuntimeError> {
+        Self::from_stream_with_codec(stream, EnvelopeCodec::for_plan(WireEncoding::Compact, plan))
+    }
+
+    fn from_stream_with_codec(
+        stream: TcpStream,
+        codec: EnvelopeCodec,
+    ) -> Result<Self, RuntimeError> {
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
         stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-        Ok(Self { stream })
+        Ok(Self { stream, codec })
     }
 }
 
 impl Transport for TcpTransport {
     fn plan(&self) -> &'static str {
-        "tcp"
+        match self.codec.encoding() {
+            WireEncoding::Reference => "tcp",
+            WireEncoding::Compact => "tcp+compact",
+        }
     }
 
     fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
-        let encoded = encode_envelope(envelope)?;
+        let encoded = self.codec.encode(envelope)?;
         let length = u32::try_from(encoded.len()).map_err(|_| RuntimeError::EnvelopeTooLarge {
             actual: encoded.len(),
             limit: u32::MAX as usize,
@@ -653,7 +726,7 @@ impl Transport for TcpTransport {
         }
         let mut encoded = vec![0; length];
         self.stream.read_exact(&mut encoded)?;
-        decode_envelope(&encoded)
+        self.codec.decode(&encoded)
     }
 
     fn abort(&mut self) {
@@ -698,6 +771,14 @@ impl QuicListener {
     }
 
     pub fn accept(self) -> Result<QuicTransport, RuntimeError> {
+        self.accept_with_codec(EnvelopeCodec::Reference)
+    }
+
+    pub fn accept_compact(self, plan: &PreparedPlan) -> Result<QuicTransport, RuntimeError> {
+        self.accept_with_codec(EnvelopeCodec::for_plan(WireEncoding::Compact, plan))
+    }
+
+    fn accept_with_codec(self, codec: EnvelopeCodec) -> Result<QuicTransport, RuntimeError> {
         let Self {
             endpoint,
             certificate: _,
@@ -719,6 +800,7 @@ impl QuicListener {
             receive,
             finished: false,
             runtime,
+            codec,
         })
     }
 }
@@ -730,10 +812,31 @@ pub struct QuicTransport {
     receive: quinn::RecvStream,
     finished: bool,
     runtime: tokio::runtime::Runtime,
+    codec: EnvelopeCodec,
 }
 
 impl QuicTransport {
     pub fn connect(address: SocketAddr, trusted_certificate: &[u8]) -> Result<Self, RuntimeError> {
+        Self::connect_with_codec(address, trusted_certificate, EnvelopeCodec::Reference)
+    }
+
+    pub fn connect_compact(
+        address: SocketAddr,
+        trusted_certificate: &[u8],
+        plan: &PreparedPlan,
+    ) -> Result<Self, RuntimeError> {
+        Self::connect_with_codec(
+            address,
+            trusted_certificate,
+            EnvelopeCodec::for_plan(WireEncoding::Compact, plan),
+        )
+    }
+
+    fn connect_with_codec(
+        address: SocketAddr,
+        trusted_certificate: &[u8],
+        codec: EnvelopeCodec,
+    ) -> Result<Self, RuntimeError> {
         let mut roots = rustls::RootCertStore::empty();
         roots
             .add(CertificateDer::from(trusted_certificate.to_vec()))
@@ -765,17 +868,21 @@ impl QuicTransport {
             receive,
             finished: false,
             runtime,
+            codec,
         })
     }
 }
 
 impl Transport for QuicTransport {
     fn plan(&self) -> &'static str {
-        "quic"
+        match self.codec.encoding() {
+            WireEncoding::Reference => "quic",
+            WireEncoding::Compact => "quic+compact",
+        }
     }
 
     fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
-        let encoded = encode_envelope(envelope)?;
+        let encoded = self.codec.encode(envelope)?;
         let length = u32::try_from(encoded.len()).map_err(|_| RuntimeError::EnvelopeTooLarge {
             actual: encoded.len(),
             limit: u32::MAX as usize,
@@ -806,7 +913,7 @@ impl Transport for QuicTransport {
         self.runtime
             .block_on(receive.read_exact(&mut encoded))
             .map_err(|error| RuntimeError::Quic(error.to_string()))?;
-        decode_envelope(&encoded)
+        self.codec.decode(&encoded)
     }
 
     fn finish(&mut self, role: &str) -> Result<(), RuntimeError> {
@@ -879,6 +986,207 @@ fn quic_runtime() -> Result<tokio::runtime::Runtime, RuntimeError> {
     Ok(tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?)
+}
+
+impl EnvelopeCodec {
+    fn for_plan(encoding: WireEncoding, plan: &PreparedPlan) -> Self {
+        match encoding {
+            WireEncoding::Reference => Self::Reference,
+            WireEncoding::Compact => Self::Compact(CompactWireCodec {
+                conversation: plan.conversation().to_string(),
+                conversation_identity: plan.conversation_identity().to_string(),
+                wire: plan.shared_wire_plan(),
+            }),
+        }
+    }
+
+    fn encoding(&self) -> WireEncoding {
+        match self {
+            Self::Reference => WireEncoding::Reference,
+            Self::Compact(_) => WireEncoding::Compact,
+        }
+    }
+
+    fn encode(&self, envelope: &WireEnvelope) -> Result<Vec<u8>, RuntimeError> {
+        match self {
+            Self::Reference => encode_envelope(envelope),
+            Self::Compact(codec) => codec.encode(envelope),
+        }
+    }
+
+    fn decode(&self, encoded: &[u8]) -> Result<WireEnvelope, RuntimeError> {
+        match self {
+            Self::Reference => decode_envelope(encoded),
+            Self::Compact(codec) => codec.decode(encoded),
+        }
+    }
+}
+
+impl CompactWireCodec {
+    fn encode(&self, envelope: &WireEnvelope) -> Result<Vec<u8>, RuntimeError> {
+        if envelope.eve_wire != WIRE_FORMAT {
+            return Err(RuntimeError::WireVersion {
+                actual: envelope.eve_wire.clone(),
+                expected: WIRE_FORMAT,
+            });
+        }
+        if envelope.conversation != self.conversation {
+            return Err(RuntimeError::CompactWire(format!(
+                "codec is prepared for conversation {}, received {}",
+                self.conversation, envelope.conversation
+            )));
+        }
+        if envelope.conversation_identity != self.conversation_identity {
+            return Err(RuntimeError::CompactWire(format!(
+                "codec is prepared for identity {}, received {}",
+                self.conversation_identity, envelope.conversation_identity
+            )));
+        }
+
+        let transition = self
+            .wire
+            .transitions
+            .iter()
+            .find(|transition| transition_matches(transition, envelope))
+            .ok_or_else(|| {
+                RuntimeError::CompactWire(format!(
+                    "state {} and frame {:?} have no transition ID in the prepared plan",
+                    envelope.state, envelope.frame
+                ))
+            })?;
+        let payload = match &envelope.frame {
+            Frame::Data { payload, .. } => payload.clone(),
+            Frame::Select { .. } | Frame::Cancel { .. } => None,
+            Frame::Fault { .. } => {
+                return Err(RuntimeError::CompactWire(
+                    "local fault observations are not transmitted".to_string(),
+                ));
+            }
+        };
+        encode_compact_envelope(&CompactEnvelope {
+            transition: transition.id,
+            sequence: envelope.sequence,
+            payload,
+        })
+    }
+
+    fn decode(&self, encoded: &[u8]) -> Result<WireEnvelope, RuntimeError> {
+        if encoded.len() > MAX_ENVELOPE_BYTES {
+            return Err(RuntimeError::EnvelopeTooLarge {
+                actual: encoded.len(),
+                limit: MAX_ENVELOPE_BYTES,
+            });
+        }
+        let compact: CompactEnvelope = serde_json::from_slice(encoded)?;
+        let transition = compact
+            .transition
+            .checked_sub(1)
+            .and_then(|index| self.wire.transitions.get(index as usize))
+            .filter(|transition| transition.id == compact.transition)
+            .ok_or_else(|| {
+                RuntimeError::CompactWire(format!("unknown transition ID {}", compact.transition))
+            })?;
+        let frame = match &transition.operation {
+            WireOperation::Data { from, to, message } => Frame::Data {
+                from: from.clone(),
+                to: to.clone(),
+                message: message.clone(),
+                payload: compact.payload,
+            },
+            WireOperation::Select { by, label } => {
+                reject_control_payload(&compact)?;
+                Frame::Select {
+                    by: by.clone(),
+                    label: label.clone(),
+                }
+            }
+            WireOperation::Cancel { from, to, scope } => {
+                reject_control_payload(&compact)?;
+                Frame::Cancel {
+                    from: from.clone(),
+                    to: to.clone(),
+                    scope: scope.clone(),
+                }
+            }
+        };
+        Ok(WireEnvelope {
+            eve_wire: WIRE_FORMAT.to_string(),
+            conversation: self.conversation.clone(),
+            conversation_identity: self.conversation_identity.clone(),
+            state: transition.state.clone(),
+            sequence: compact.sequence,
+            frame,
+        })
+    }
+}
+
+fn transition_matches(transition: &WireTransition, envelope: &WireEnvelope) -> bool {
+    if transition.state != envelope.state {
+        return false;
+    }
+    match (&transition.operation, &envelope.frame) {
+        (
+            WireOperation::Data { from, to, message },
+            Frame::Data {
+                from: actual_from,
+                to: actual_to,
+                message: actual_message,
+                ..
+            },
+        ) => from == actual_from && to == actual_to && message == actual_message,
+        (
+            WireOperation::Select { by, label },
+            Frame::Select {
+                by: actual_by,
+                label: actual_label,
+            },
+        ) => by == actual_by && label == actual_label,
+        (
+            WireOperation::Cancel { from, to, scope },
+            Frame::Cancel {
+                from: actual_from,
+                to: actual_to,
+                scope: actual_scope,
+            },
+        ) => from == actual_from && to == actual_to && scope == actual_scope,
+        _ => false,
+    }
+}
+
+fn reject_control_payload(compact: &CompactEnvelope) -> Result<(), RuntimeError> {
+    if compact.payload.is_some() {
+        return Err(RuntimeError::CompactWire(
+            "select and cancel transitions cannot carry a payload".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn encode_compact_envelope(envelope: &CompactEnvelope) -> Result<Vec<u8>, RuntimeError> {
+    let encoded = serde_json::to_vec(envelope)?;
+    if encoded.len() > MAX_ENVELOPE_BYTES {
+        return Err(RuntimeError::EnvelopeTooLarge {
+            actual: encoded.len(),
+            limit: MAX_ENVELOPE_BYTES,
+        });
+    }
+    Ok(encoded)
+}
+
+pub(crate) struct PreparedCompactRoundTrip {
+    codec: EnvelopeCodec,
+}
+
+impl PreparedCompactRoundTrip {
+    pub(crate) fn new(plan: &PreparedPlan) -> Self {
+        Self {
+            codec: EnvelopeCodec::for_plan(WireEncoding::Compact, plan),
+        }
+    }
+
+    pub(crate) fn execute(&self, envelope: &WireEnvelope) -> Result<WireEnvelope, RuntimeError> {
+        self.codec.decode(&self.codec.encode(envelope)?)
+    }
 }
 
 fn encode_envelope(envelope: &WireEnvelope) -> Result<Vec<u8>, RuntimeError> {
@@ -1098,7 +1406,26 @@ pub fn run_memory_plan_demo(
     token_limit: usize,
     cancel_after: Option<usize>,
 ) -> Result<DemoReport, RuntimeError> {
-    let (mut client_transport, mut server_transport) = memory_pair();
+    run_memory_plan_demo_with_encoding(
+        plan,
+        prompt,
+        token_limit,
+        cancel_after,
+        WireEncoding::Reference,
+    )
+}
+
+pub fn run_memory_plan_demo_with_encoding(
+    plan: &PreparedPlan,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+    encoding: WireEncoding,
+) -> Result<DemoReport, RuntimeError> {
+    let (mut client_transport, mut server_transport) = match encoding {
+        WireEncoding::Reference => memory_pair(),
+        WireEncoding::Compact => memory_pair_compact(plan),
+    };
     let prompt = prompt.to_string();
     let (client, server) = std::thread::scope(|scope| {
         let server_worker =
@@ -1114,7 +1441,11 @@ pub fn run_memory_plan_demo(
             .map_err(|_| RuntimeError::WorkerPanicked)??;
         Ok::<_, RuntimeError>((client, server))
     })?;
-    Ok(demo_report("memory", client, server))
+    let transport_plan = match encoding {
+        WireEncoding::Reference => "memory",
+        WireEncoding::Compact => "memory+compact",
+    };
+    Ok(demo_report(transport_plan, client, server))
 }
 
 pub fn run_memory_fault_demo(
@@ -1215,17 +1546,39 @@ pub fn run_tcp_plan_demo(
     token_limit: usize,
     cancel_after: Option<usize>,
 ) -> Result<DemoReport, RuntimeError> {
+    run_tcp_plan_demo_with_encoding(
+        plan,
+        prompt,
+        token_limit,
+        cancel_after,
+        WireEncoding::Reference,
+    )
+}
+
+pub fn run_tcp_plan_demo_with_encoding(
+    plan: &PreparedPlan,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+    encoding: WireEncoding,
+) -> Result<DemoReport, RuntimeError> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let address = listener.local_addr()?;
     let prompt = prompt.to_string();
     let (client, server) = std::thread::scope(|scope| {
         let server_worker = scope.spawn(move || {
             let (stream, _) = listener.accept()?;
-            let mut transport = TcpTransport::from_stream(stream)?;
+            let mut transport = match encoding {
+                WireEncoding::Reference => TcpTransport::from_stream(stream)?,
+                WireEncoding::Compact => TcpTransport::from_stream_compact(stream, plan)?,
+            };
             run_generate_server_plan(plan, &mut transport, token_limit)
         });
         let client_worker = scope.spawn(move || {
-            let mut transport = TcpTransport::connect(address)?;
+            let mut transport = match encoding {
+                WireEncoding::Reference => TcpTransport::connect(address)?,
+                WireEncoding::Compact => TcpTransport::connect_compact(address, plan)?,
+            };
             run_generate_client_plan(plan, &mut transport, &prompt, cancel_after)
         });
         let client = client_worker
@@ -1236,7 +1589,11 @@ pub fn run_tcp_plan_demo(
             .map_err(|_| RuntimeError::WorkerPanicked)??;
         Ok::<_, RuntimeError>((client, server))
     })?;
-    Ok(demo_report("tcp", client, server))
+    let transport_plan = match encoding {
+        WireEncoding::Reference => "tcp",
+        WireEncoding::Compact => "tcp+compact",
+    };
+    Ok(demo_report(transport_plan, client, server))
 }
 
 pub fn run_quic_demo(
@@ -1255,17 +1612,41 @@ pub fn run_quic_plan_demo(
     token_limit: usize,
     cancel_after: Option<usize>,
 ) -> Result<DemoReport, RuntimeError> {
+    run_quic_plan_demo_with_encoding(
+        plan,
+        prompt,
+        token_limit,
+        cancel_after,
+        WireEncoding::Reference,
+    )
+}
+
+pub fn run_quic_plan_demo_with_encoding(
+    plan: &PreparedPlan,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+    encoding: WireEncoding,
+) -> Result<DemoReport, RuntimeError> {
     let listener = QuicListener::bind("127.0.0.1:0".parse().expect("valid address"))?;
     let address = listener.local_addr()?;
     let trusted_certificate = listener.certificate_der().to_vec();
     let prompt = prompt.to_string();
     let (client, server) = std::thread::scope(|scope| {
         let server_worker = scope.spawn(move || {
-            let mut transport = listener.accept()?;
+            let mut transport = match encoding {
+                WireEncoding::Reference => listener.accept()?,
+                WireEncoding::Compact => listener.accept_compact(plan)?,
+            };
             run_generate_server_plan(plan, &mut transport, token_limit)
         });
         let client_worker = scope.spawn(move || {
-            let mut transport = QuicTransport::connect(address, &trusted_certificate)?;
+            let mut transport = match encoding {
+                WireEncoding::Reference => QuicTransport::connect(address, &trusted_certificate)?,
+                WireEncoding::Compact => {
+                    QuicTransport::connect_compact(address, &trusted_certificate, plan)?
+                }
+            };
             run_generate_client_plan(plan, &mut transport, &prompt, cancel_after)
         });
         let client = client_worker
@@ -1276,7 +1657,11 @@ pub fn run_quic_plan_demo(
             .map_err(|_| RuntimeError::WorkerPanicked)??;
         Ok::<_, RuntimeError>((client, server))
     })?;
-    Ok(demo_report("quic", client, server))
+    let transport_plan = match encoding {
+        WireEncoding::Reference => "quic",
+        WireEncoding::Compact => "quic+compact",
+    };
+    Ok(demo_report(transport_plan, client, server))
 }
 
 fn token_payload(frame: &Frame) -> Result<u64, RuntimeError> {
@@ -1419,7 +1804,7 @@ mod tests {
     use crate::plan::EvePlan;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    // Each reference QUIC demo owns and tears down its own Tokio runtime and endpoints. Keep
+    // Each QUIC demo owns and tears down its own Tokio runtime and endpoints. Keep
     // those lifecycle tests from overlapping; independent connection concurrency belongs in a
     // long-lived runtime test rather than this one-conversation harness.
     fn quic_test_guard() -> MutexGuard<'static, ()> {
@@ -1484,6 +1869,47 @@ mod tests {
         let second = EndpointMachine::from_plan(&plan, "client").unwrap();
         assert!(Arc::ptr_eq(&first.endpoint, &second.endpoint));
         assert_eq!(first.plan_identity(), plan.plan_identity());
+    }
+
+    #[test]
+    fn compact_envelope_round_trips_to_the_same_semantic_frame() {
+        let plan = PreparedPlan::compile(&conversation()).unwrap();
+        let mut client = EndpointMachine::from_plan(&plan, "client").unwrap();
+        let envelope = client.emit_data(json!({ "text": "hello" })).unwrap();
+        let codec = EnvelopeCodec::for_plan(WireEncoding::Compact, &plan);
+        let compact = codec.encode(&envelope).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&compact).unwrap(),
+            json!({ "t": 7, "q": 0, "p": { "text": "hello" } })
+        );
+        assert!(compact.len() < encode_envelope(&envelope).unwrap().len());
+        assert_eq!(codec.decode(&compact).unwrap(), envelope);
+    }
+
+    #[test]
+    fn compact_codec_rejects_an_unknown_transition_id() {
+        let plan = PreparedPlan::compile(&conversation()).unwrap();
+        let codec = EnvelopeCodec::for_plan(WireEncoding::Compact, &plan);
+        let error = codec.decode(br#"{"t":65535,"q":0}"#).unwrap_err();
+        assert!(matches!(error, RuntimeError::CompactWire(_)));
+    }
+
+    #[test]
+    fn compact_memory_preserves_explicit_cancellation() {
+        let plan = PreparedPlan::compile(&conversation()).unwrap();
+        let report = run_memory_plan_demo_with_encoding(
+            &plan,
+            "cancel compactly",
+            5,
+            Some(2),
+            WireEncoding::Compact,
+        )
+        .unwrap();
+        assert_eq!(report.transport_plan, "memory+compact");
+        assert_eq!(report.client.tokens, vec![1, 2]);
+        assert_eq!(report.server.tokens, vec![1, 2]);
+        assert!(report.semantic_trace_equivalent);
+        assert!(report.outcome_equivalent);
     }
 
     #[test]
@@ -1662,6 +2088,53 @@ mod tests {
         );
         assert_eq!(memory.client.semantic_trace, tcp.client.semantic_trace);
         assert_eq!(memory.client.semantic_trace, quic.client.semantic_trace);
+    }
+
+    #[test]
+    fn compact_wire_preserves_reference_semantics_on_every_transport() {
+        let _guard = quic_test_guard();
+        let plan = PreparedPlan::compile(&conversation()).unwrap();
+        let reference = run_memory_plan_demo(&plan, "same compact input", 3, None).unwrap();
+        let compact_memory = run_memory_plan_demo_with_encoding(
+            &plan,
+            "same compact input",
+            3,
+            None,
+            WireEncoding::Compact,
+        )
+        .unwrap();
+        let compact_tcp = run_tcp_plan_demo_with_encoding(
+            &plan,
+            "same compact input",
+            3,
+            None,
+            WireEncoding::Compact,
+        )
+        .unwrap();
+        let compact_quic = run_quic_plan_demo_with_encoding(
+            &plan,
+            "same compact input",
+            3,
+            None,
+            WireEncoding::Compact,
+        )
+        .unwrap();
+
+        for compact in [&compact_memory, &compact_tcp, &compact_quic] {
+            assert!(compact.semantic_trace_equivalent);
+            assert!(compact.outcome_equivalent);
+            assert_eq!(
+                compact.client.semantic_trace_identity,
+                reference.client.semantic_trace_identity
+            );
+            assert_eq!(
+                compact.client.semantic_trace,
+                reference.client.semantic_trace
+            );
+        }
+        assert_eq!(compact_memory.transport_plan, "memory+compact");
+        assert_eq!(compact_tcp.transport_plan, "tcp+compact");
+        assert_eq!(compact_quic.transport_plan, "quic+compact");
     }
 
     #[test]
