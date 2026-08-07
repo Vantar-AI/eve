@@ -1417,6 +1417,18 @@ fn demo_report(
 mod tests {
     use super::*;
     use crate::plan::EvePlan;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    // Each reference QUIC demo owns and tears down its own Tokio runtime and endpoints. Keep
+    // those lifecycle tests from overlapping; independent connection concurrency belongs in a
+    // long-lived runtime test rather than this one-conversation harness.
+    fn quic_test_guard() -> MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn conversation() -> Conversation {
         serde_json::from_str(include_str!("../examples/generate.eveconv.json")).unwrap()
@@ -1602,6 +1614,7 @@ mod tests {
 
     #[test]
     fn quic_plan_runs_the_same_conversation_to_completion() {
+        let _guard = quic_test_guard();
         let report = run_quic_demo(&conversation(), "hello", 3, None).unwrap();
         assert_eq!(report.transport_plan, "quic");
         assert_eq!(report.client.tokens, vec![1, 2, 3]);
@@ -1613,6 +1626,7 @@ mod tests {
 
     #[test]
     fn quic_rejects_an_untrusted_server_certificate() {
+        let _guard = quic_test_guard();
         let listener = QuicListener::bind("127.0.0.1:0".parse().expect("valid address")).unwrap();
         let address = listener.local_addr().unwrap();
         let untrusted_listener =
@@ -1630,6 +1644,7 @@ mod tests {
 
     #[test]
     fn all_transport_plans_preserve_the_same_semantic_trace() {
+        let _guard = quic_test_guard();
         let memory = run_memory_demo(&conversation(), "same input", 3, None).unwrap();
         let tcp = run_tcp_demo(&conversation(), "same input", 3, None).unwrap();
         let quic = run_quic_demo(&conversation(), "same input", 3, None).unwrap();
