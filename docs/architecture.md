@@ -91,13 +91,14 @@ Conversation v0 JSON
     → representation and semantic validation
     → global conversation state graph
     → client endpoint machine + server endpoint machine
-    → independent endpoint execution
+    → verified, identified Eve Plan v0
+    → lightweight sessions over shared endpoint graphs
        ├── memory plan
        ├── length-delimited TCP plan
        └── TLS-authenticated QUIC plan
     → successful trace equivalence or declared terminal failure
 ```
 
-Each endpoint checks the conversation name, experimental semantic hash, expected state, and sequence before accepting a frame. The memory, TCP, and QUIC plans serialize the same versioned Eve Wire envelope. The reference `Generate` workload completes normally, through cancellation, or at a declared `transport.closed` terminal state without transport-specific application logic. A deterministic wrapper can fail an exact role, transport operation, and occurrence for repeatable counterexamples.
+Each endpoint checks the conversation name, experimental semantic hash, expected state, and sequence before accepting a frame. The compiler validates and projects once into an Eve Plan with its own deterministic identity; sessions share immutable projected graphs. The memory, TCP, and QUIC transports serialize the same versioned Eve Wire envelope. The reference `Generate` workload completes normally, through cancellation, or at declared closed/timeout/reset/unreachable/uncertain terminal states without transport-specific application logic. A deterministic wrapper can fail an exact role, transport operation, and occurrence for repeatable, asymmetric counterexamples.
 
-This runtime remains an experiment rather than a deployment substrate. It is blocking, supports two static roles, and sends JSON payloads. QUIC encrypts the connection and authenticates the server through an explicitly pinned certificate, but persistent identities, client authentication, authorization, flow control, structural payload validation from Eve type definitions, deadline enforcement, recovery, distributed failure agreement, and transport negotiation remain unimplemented. The [first baseline measurement](benchmark.md) shows the full reference path is currently slower than a hand-written protocol, establishing a number to improve rather than a performance claim.
+This runtime remains an experiment rather than a deployment substrate. It is blocking, supports two static roles, and sends JSON payloads. QUIC encrypts the connection and authenticates the server through an explicitly pinned certificate, but persistent identities, client authentication, authorization, flow control, structural payload validation from Eve type definitions, deadline enforcement, recovery, distributed failure agreement, and transport negotiation remain unimplemented. The [Plan v0 measurement](benchmark.md) shows session creation is cheap but full-envelope transitions and whole execution remain slower than a hand-written protocol, establishing the wire specialization target rather than a performance claim.

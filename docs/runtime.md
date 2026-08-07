@@ -6,7 +6,9 @@ It is deliberately a reference implementation rather than a performance architec
 
 ## Execution model
 
-Both roles load the same Conversation v0 graph and independently derive their local endpoint machines. No central coordinator advances the conversation.
+The runtime compiles a Conversation v0 graph into one verified Eve Plan containing both projected endpoints. Each role creates a lightweight session over its shared immutable endpoint graph. No central coordinator advances the conversation.
+
+`demo` compiles once before starting either role. `compile` and `run-plan` make that boundary explicit and reusable across executions; see [Eve Plan v0](plan.md).
 
 For every transition, the sending endpoint:
 
@@ -77,21 +79,22 @@ Each report includes a semantic trace hash. Equivalent client and server hashes 
 
 Conversation v0 declares failure IDs separately from states. A communication state maps an applicable failure ID to a terminal `fail` state. The v0 checker rejects an unknown failure ID or an edge whose target does not terminate with that same failure. Recovery and retry transitions are intentionally deferred; this slice first makes failure meaning explicit.
 
-The reference runtime maps memory/TCP closure and QUIC errors to `transport.closed`. A local endpoint follows the projected failure edge and records a semantic `FAULT` observation instead of leaking the transport error directly to application code.
+The example declares `transport.closed`, `transport.timeout`, `transport.reset`, `transport.unreachable`, and `transport.uncertain`. The reference runtime classifies applicable I/O errors into the first four categories. `uncertain` represents a local knowledge state: an endpoint cannot prove how far its peer progressed.
 
 The memory fault plan makes this behavior reproducible. It fails one exact transport operation selected by endpoint role, `send` or `receive`, and a one-based occurrence:
 
 ```bash
 cargo run -- fault-demo --fault-role server \
   --fault-operation send --fault-at 2 \
-  --failure transport.closed
+  --failure transport.timeout \
+  --peer-failure transport.uncertain
 ```
 
-Injecting the server's second send closes both channel directions. Both endpoints reach `transport-failed` with the same typed outcome. Their trace hashes differ because each trace honestly records its own observer on the `FAULT` operation. Reports therefore distinguish `semantic_trace_equivalent` from `outcome_equivalent`.
+Injecting the server's second send records `transport.timeout` at the server and closes the simulated link. The client records `transport.uncertain` because it cannot know whether the peer advanced before the loss. Both traces are valid, but their terminal states and hashes differ. Reports distinguish `semantic_trace_equivalent` from `outcome_equivalent` rather than inventing agreement that the transport cannot provide.
 
 The report includes the exact fault plan. The command fails if the selected occurrence is never reached, preventing a silent successful run from masquerading as an injected counterexample.
 
-This does not solve distributed agreement. A real partition can prevent one role from learning why its peer disappeared. The current two-thread injector models simultaneous local closure so the failure semantics can be checked deterministically; uncertainty states, deadlines, recovery, and partial delivery remain future work.
+This does not solve distributed agreement. The deterministic memory injector assigns the selected local observations so asymmetric semantics can be tested repeatably. It does not yet model time, packet-level partial delivery, recovery, or a real network partition.
 
 ## Reference benchmark
 
@@ -99,7 +102,7 @@ The `benchmark` command compares the whole Eve memory path with a hand-written r
 
 ```bash
 cargo run --release --locked -- benchmark \
-  --iterations 200 --warmup 20 --tokens 3
+  --iterations 500 --warmup 50 --tokens 3
 ```
 
 See [the benchmark protocol, initial result, and limitations](benchmark.md).
@@ -111,11 +114,13 @@ The prototype currently guarantees only:
 - local action checking against the projected endpoint;
 - conversation-name and semantic-hash agreement;
 - exact state and sequence agreement;
+- verified reusable plan identity and structurally valid projected state references;
 - a maximum envelope size;
 - explicit selection and cancellation transitions;
 - declared terminal transport-failure transitions;
 - deterministic role/operation/occurrence fault injection;
-- equivalent semantic traces across all three implemented plans;
+- equivalent successful semantic traces across all three implemented transports;
+- explicit asymmetric timeout/uncertainty observations under deterministic faults;
 - QUIC transport encryption and pinned server authentication;
 - rejection of a QUIC server presenting an untrusted certificate.
 
@@ -134,11 +139,11 @@ The TCP server listens on loopback by default because that wire plan is plaintex
 
 ## Current result and next experiment
 
-Memory, TCP, and QUIC preserve the same successful semantic trace, and QUIC authenticates the server while encrypting transport data. A wrong pinned certificate is rejected. Transport closure can now reach a declared terminal failure, and a deterministic injector covers that path. A first conventional-baseline benchmark also makes the unoptimized reference overhead explicit.
+Memory, TCP, and QUIC preserve the same successful semantic trace, and QUIC authenticates the server while encrypting transport data. A wrong pinned certificate is rejected. Conversations now compile into reusable, identified endpoint plans. Session startup is cheap, while the split benchmark identifies full-envelope JSON representation as the dominant local overhead. Deterministic failures preserve different local timeout and uncertainty observations.
 
 The next runtime experiment should:
 
-1. Distinguish timeout, reset, unreachable, and uncertain failures instead of mapping all transport errors to `transport.closed`.
-2. Compile and cache endpoint machines outside the conversation hot path.
-3. Measure protocol-machine, serialization, handshake, and transport overhead separately.
-4. Exercise the same faults and baseline across independent processes and a controlled multi-node testbed.
+1. Establish conversation, plan, role, and state identities once per session, then use compact transition IDs on the fast path.
+2. Measure protocol-machine checks separately from encoding and channel transfer.
+3. Add deadline enforcement and recovery transitions rather than terminal failures only.
+4. Exercise asymmetric faults and the conventional baseline across independent processes and a controlled multi-node testbed.

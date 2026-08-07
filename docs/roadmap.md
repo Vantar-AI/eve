@@ -29,7 +29,7 @@ Eve should advance by falsifiable prototypes, not by designing a large language 
 
 **Exit criterion:** one conversation graph projects into compatible endpoints and runs unchanged on a laptop simulation and a multi-node deployment, with explainable plan differences; a typed hole can be queried and filled without text rewriting.
 
-**Current evidence:** the request/token/cancel graph now runs through projected endpoints using memory, TCP, and authenticated QUIC plans. The CLI also runs TCP or QUIC roles as separate processes, and both report the same semantic conversation and trace identities. A declared transport failure projects into both endpoints, deterministic operation-level fault injection reaches it, and a reproducible hand-written JSON baseline exposes current reference overhead. Multi-node execution, typed structural patches, transport negotiation, recovery semantics, and representative AI benchmarks remain open.
+**Current evidence:** the request/token/cancel graph now compiles once into a verified, identified Eve Plan whose shared endpoint graphs create lightweight sessions over memory, TCP, and authenticated QUIC. The CLI also runs TCP or QUIC roles as separate processes, and both report the same semantic conversation and trace identities. Deterministic faults preserve asymmetric timeout and uncertainty observations. A split conventional baseline shows plan reuse helps while full JSON envelopes remain expensive. Multi-node execution, canonical identity, typed structural patches, specialized wire plans, recovery semantics, and representative AI benchmarks remain open.
 
 ## Phase 2 — Minimal Eve front end
 

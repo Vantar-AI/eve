@@ -1,0 +1,19 @@
+[
+  {
+    "op": "data",
+    "from": "client",
+    "to": "server",
+    "message": "prompt",
+    "payload": { "text": "Hello" }
+  },
+  {
+    "op": "select",
+    "by": "server",
+    "label": "token"
+  },
+  {
+    "op": "fault",
+    "observer": "client",
+    "failure": "transport.uncertain"
+  }
+]

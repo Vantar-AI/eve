@@ -5,6 +5,7 @@ use std::fmt;
 use thiserror::Error;
 
 pub mod benchmark;
+pub mod plan;
 pub mod runtime;
 
 pub const CONVERSATION_FORMAT: &str = "0.1.0";
@@ -615,6 +616,10 @@ impl EndpointState {
 pub fn project(conversation: &Conversation) -> Result<Vec<Endpoint>, ValidationErrors> {
     validate(conversation)?;
 
+    Ok(project_validated(conversation))
+}
+
+pub(crate) fn project_validated(conversation: &Conversation) -> Vec<Endpoint> {
     let mut endpoints = Vec::new();
     for role in &conversation.roles {
         let states = conversation
@@ -631,7 +636,7 @@ pub fn project(conversation: &Conversation) -> Result<Vec<Endpoint>, ValidationE
             states,
         });
     }
-    Ok(endpoints)
+    endpoints
 }
 
 fn project_state(state: &GlobalState, role: &str) -> EndpointState {
@@ -930,6 +935,30 @@ mod tests {
         assert!(!report.successful);
         assert_eq!(report.final_state, "transport-failed");
         assert_eq!(report.failure.as_deref(), Some("transport.closed"));
+    }
+
+    #[test]
+    fn accepts_distinct_local_failure_observations() {
+        let cases = [
+            (
+                include_str!("../examples/traces/generate-timeout.valid.json"),
+                "transport-timeout",
+                "transport.timeout",
+            ),
+            (
+                include_str!("../examples/traces/generate-uncertain.valid.json"),
+                "transport-uncertain",
+                "transport.uncertain",
+            ),
+        ];
+        for (trace, final_state, failure) in cases {
+            let frames: Vec<Frame> = serde_json::from_str(trace).unwrap();
+            let report = verify_trace(&conversation(), &frames).unwrap();
+            assert!(report.complete);
+            assert!(!report.successful);
+            assert_eq!(report.final_state, final_state);
+            assert_eq!(report.failure.as_deref(), Some(failure));
+        }
     }
 
     #[test]

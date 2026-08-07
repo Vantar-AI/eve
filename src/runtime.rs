@@ -1,4 +1,5 @@
-use crate::{Conversation, Endpoint, EndpointState, Frame, ValidationErrors, project, validate};
+use crate::plan::{PlanError, PreparedPlan};
+use crate::{Conversation, Endpoint, EndpointState, Frame};
 use rcgen::CertifiedKey;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
@@ -32,7 +33,7 @@ pub struct WireEnvelope {
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     #[error(transparent)]
-    InvalidConversation(#[from] ValidationErrors),
+    Plan(#[from] PlanError),
     #[error("conversation has no projected endpoint for role {0}")]
     UnknownRole(String),
     #[error("wire codec error: {0}")]
@@ -97,47 +98,50 @@ pub enum RuntimeError {
 impl RuntimeError {
     fn transport_failure(&self) -> Option<&str> {
         match self {
-            Self::Io(_) | Self::TransportClosed(_) | Self::Quic(_) => Some("transport.closed"),
+            Self::Io(error) => Some(match error.kind() {
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => {
+                    "transport.timeout"
+                }
+                std::io::ErrorKind::ConnectionReset => "transport.reset",
+                std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::AddrNotAvailable
+                | std::io::ErrorKind::NotConnected => "transport.unreachable",
+                _ => "transport.closed",
+            }),
+            Self::TransportClosed(_) | Self::Quic(_) => Some("transport.closed"),
             Self::InjectedFailure { failure, .. } => Some(failure),
             _ => None,
         }
     }
 }
 
-pub fn conversation_identity(conversation: &Conversation) -> Result<String, RuntimeError> {
-    validate(conversation)?;
-    let mut semantic = conversation.clone();
-    semantic.schema = None;
-    semantic.annotations.clear();
-    let encoded = serde_json::to_vec(&semantic)?;
-    let digest = Sha256::digest(encoded);
-    let mut identity = String::with_capacity(7 + digest.len() * 2);
-    identity.push_str("sha256:");
-    for byte in digest {
-        write!(&mut identity, "{byte:02x}").expect("writing into a string cannot fail");
-    }
-    Ok(identity)
-}
+pub use crate::plan::conversation_identity;
 
 #[derive(Debug)]
 pub struct EndpointMachine {
-    endpoint: Endpoint,
+    endpoint: Arc<Endpoint>,
     conversation_identity: String,
+    plan_identity: String,
     current: String,
     sequence: u64,
 }
 
 impl EndpointMachine {
     pub fn for_role(conversation: &Conversation, role: &str) -> Result<Self, RuntimeError> {
-        let identity = conversation_identity(conversation)?;
-        let endpoint = project(conversation)?
-            .into_iter()
-            .find(|candidate| candidate.role == role)
+        let plan = PreparedPlan::compile(conversation)?;
+        Self::from_plan(&plan, role)
+    }
+
+    pub fn from_plan(plan: &PreparedPlan, role: &str) -> Result<Self, RuntimeError> {
+        let endpoint = plan
+            .endpoint(role)
+            .cloned()
             .ok_or_else(|| RuntimeError::UnknownRole(role.to_string()))?;
         let current = endpoint.initial.clone();
         Ok(Self {
             endpoint,
-            conversation_identity: identity,
+            conversation_identity: plan.conversation_identity().to_string(),
+            plan_identity: plan.plan_identity().to_string(),
             current,
             sequence: 0,
         })
@@ -153,6 +157,10 @@ impl EndpointMachine {
 
     pub fn identity(&self) -> &str {
         &self.conversation_identity
+    }
+
+    pub fn plan_identity(&self) -> &str {
+        &self.plan_identity
     }
 
     pub fn current_state(&self) -> &str {
@@ -419,6 +427,8 @@ pub struct FaultPlan {
     pub operation: FaultOperation,
     pub occurrence: usize,
     pub failure: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_failure: Option<String>,
 }
 
 pub struct FaultInjectingTransport<T> {
@@ -432,6 +442,15 @@ pub struct FaultInjectingTransport<T> {
 
 impl<T> FaultInjectingTransport<T> {
     pub fn new(inner: T, role: &str, plan: FaultPlan) -> Result<Self, RuntimeError> {
+        Self::with_fired(inner, role, plan, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn with_fired(
+        inner: T,
+        role: &str,
+        plan: FaultPlan,
+        fired: Arc<AtomicBool>,
+    ) -> Result<Self, RuntimeError> {
         if plan.occurrence == 0 {
             return Err(RuntimeError::Application(
                 "fault occurrence must be at least one".to_string(),
@@ -443,7 +462,7 @@ impl<T> FaultInjectingTransport<T> {
             plan,
             sends: 0,
             receives: 0,
-            fired: Arc::new(AtomicBool::new(false)),
+            fired,
         })
     }
 
@@ -472,7 +491,7 @@ impl<T> FaultInjectingTransport<T> {
         should_inject
     }
 
-    fn injected_error(&self, operation: FaultOperation) -> RuntimeError {
+    fn injected_error(&self, operation: FaultOperation, failure: &str) -> RuntimeError {
         let occurrence = match operation {
             FaultOperation::Send => self.sends,
             FaultOperation::Receive => self.receives,
@@ -481,7 +500,27 @@ impl<T> FaultInjectingTransport<T> {
             role: self.role.clone(),
             operation: operation.as_str(),
             occurrence,
-            failure: self.plan.failure.clone(),
+            failure: failure.to_string(),
+        }
+    }
+
+    fn map_peer_error<U>(
+        &self,
+        operation: FaultOperation,
+        result: Result<U, RuntimeError>,
+    ) -> Result<U, RuntimeError> {
+        match result {
+            Err(error)
+                if self.role != self.plan.role
+                    && self.fired.load(Ordering::Relaxed)
+                    && error.transport_failure().is_some() =>
+            {
+                if let Some(failure) = &self.plan.peer_failure {
+                    return Err(self.injected_error(operation, failure));
+                }
+                Err(error)
+            }
+            other => other,
         }
     }
 }
@@ -494,17 +533,19 @@ impl<T: Transport> Transport for FaultInjectingTransport<T> {
     fn send(&mut self, envelope: &WireEnvelope) -> Result<(), RuntimeError> {
         if self.should_inject(FaultOperation::Send) {
             self.inner.abort();
-            return Err(self.injected_error(FaultOperation::Send));
+            return Err(self.injected_error(FaultOperation::Send, &self.plan.failure));
         }
-        self.inner.send(envelope)
+        let result = self.inner.send(envelope);
+        self.map_peer_error(FaultOperation::Send, result)
     }
 
     fn receive(&mut self) -> Result<WireEnvelope, RuntimeError> {
         if self.should_inject(FaultOperation::Receive) {
             self.inner.abort();
-            return Err(self.injected_error(FaultOperation::Receive));
+            return Err(self.injected_error(FaultOperation::Receive, &self.plan.failure));
         }
-        self.inner.receive()
+        let result = self.inner.receive();
+        self.map_peer_error(FaultOperation::Receive, result)
     }
 
     fn finish(&mut self, role: &str) -> Result<(), RuntimeError> {
@@ -867,6 +908,7 @@ pub struct ExecutionReport {
     pub transport: String,
     pub conversation: String,
     pub conversation_identity: String,
+    pub plan_identity: String,
     pub semantic_trace_identity: String,
     pub frames: u64,
     pub tokens: Vec<u64>,
@@ -883,6 +925,7 @@ pub struct ExecutionReport {
 pub struct DemoReport {
     pub transport_plan: String,
     pub conversation_identity: String,
+    pub plan_identity: String,
     pub semantic_trace_equivalent: bool,
     pub outcome_equivalent: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -897,18 +940,28 @@ pub fn run_generate_client<T: Transport>(
     prompt: &str,
     cancel_after: Option<usize>,
 ) -> Result<ExecutionReport, RuntimeError> {
+    let plan = PreparedPlan::compile(conversation)?;
+    run_generate_client_plan(&plan, transport, prompt, cancel_after)
+}
+
+pub fn run_generate_client_plan<T: Transport>(
+    plan: &PreparedPlan,
+    transport: &mut T,
+    prompt: &str,
+    cancel_after: Option<usize>,
+) -> Result<ExecutionReport, RuntimeError> {
     if cancel_after == Some(0) {
         return Err(RuntimeError::Application(
             "cancel_after must be at least one token".to_string(),
         ));
     }
-    let plan = transport.plan().to_string();
-    let mut machine = EndpointMachine::for_role(conversation, "client")?;
+    let transport_plan = transport.plan().to_string();
+    let mut machine = EndpointMachine::from_plan(plan, "client")?;
     let prompt = machine.emit_data(json!({ "text": prompt }))?;
     let mut trace = Vec::new();
     let mut tokens = Vec::new();
     if !send_and_record(&mut machine, transport, &prompt, &mut trace)? {
-        return Ok(report(&machine, plan, tokens, trace));
+        return Ok(report(&machine, transport_plan, tokens, trace));
     }
 
     'conversation: while !machine.is_complete() {
@@ -951,7 +1004,7 @@ pub fn run_generate_client<T: Transport>(
     if machine.is_successful() {
         transport.finish(machine.role())?;
     }
-    Ok(report(&machine, plan, tokens, trace))
+    Ok(report(&machine, transport_plan, tokens, trace))
 }
 
 pub fn run_generate_server<T: Transport>(
@@ -959,11 +1012,20 @@ pub fn run_generate_server<T: Transport>(
     transport: &mut T,
     token_limit: usize,
 ) -> Result<ExecutionReport, RuntimeError> {
-    let plan = transport.plan().to_string();
-    let mut machine = EndpointMachine::for_role(conversation, "server")?;
+    let plan = PreparedPlan::compile(conversation)?;
+    run_generate_server_plan(&plan, transport, token_limit)
+}
+
+pub fn run_generate_server_plan<T: Transport>(
+    plan: &PreparedPlan,
+    transport: &mut T,
+    token_limit: usize,
+) -> Result<ExecutionReport, RuntimeError> {
+    let transport_plan = transport.plan().to_string();
+    let mut machine = EndpointMachine::from_plan(plan, "server")?;
     let mut trace = Vec::new();
     let Some(prompt) = receive_and_record(&mut machine, transport, &mut trace)? else {
-        return Ok(report(&machine, plan, Vec::new(), trace));
+        return Ok(report(&machine, transport_plan, Vec::new(), trace));
     };
     prompt_payload(&prompt)?;
     let mut tokens = Vec::new();
@@ -1017,7 +1079,7 @@ pub fn run_generate_server<T: Transport>(
     if machine.is_successful() {
         transport.finish(machine.role())?;
     }
-    Ok(report(&machine, plan, tokens, trace))
+    Ok(report(&machine, transport_plan, tokens, trace))
 }
 
 pub fn run_memory_demo(
@@ -1026,21 +1088,23 @@ pub fn run_memory_demo(
     token_limit: usize,
     cancel_after: Option<usize>,
 ) -> Result<DemoReport, RuntimeError> {
+    let plan = PreparedPlan::compile(conversation)?;
+    run_memory_plan_demo(&plan, prompt, token_limit, cancel_after)
+}
+
+pub fn run_memory_plan_demo(
+    plan: &PreparedPlan,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+) -> Result<DemoReport, RuntimeError> {
     let (mut client_transport, mut server_transport) = memory_pair();
-    let client_conversation = conversation.clone();
-    let server_conversation = conversation.clone();
     let prompt = prompt.to_string();
     let (client, server) = std::thread::scope(|scope| {
-        let server_worker = scope.spawn(move || {
-            run_generate_server(&server_conversation, &mut server_transport, token_limit)
-        });
+        let server_worker =
+            scope.spawn(move || run_generate_server_plan(plan, &mut server_transport, token_limit));
         let client_worker = scope.spawn(move || {
-            run_generate_client(
-                &client_conversation,
-                &mut client_transport,
-                &prompt,
-                cancel_after,
-            )
+            run_generate_client_plan(plan, &mut client_transport, &prompt, cancel_after)
         });
         let client = client_worker
             .join()
@@ -1060,40 +1124,59 @@ pub fn run_memory_fault_demo(
     cancel_after: Option<usize>,
     fault: FaultPlan,
 ) -> Result<DemoReport, RuntimeError> {
-    if !conversation.roles.iter().any(|role| role.id == fault.role) {
+    let plan = PreparedPlan::compile(conversation)?;
+    run_memory_plan_fault_demo(&plan, prompt, token_limit, cancel_after, fault)
+}
+
+pub fn run_memory_plan_fault_demo(
+    plan: &PreparedPlan,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+    fault: FaultPlan,
+) -> Result<DemoReport, RuntimeError> {
+    if plan.endpoint(&fault.role).is_none() {
         return Err(RuntimeError::UnknownRole(fault.role));
     }
-    if !conversation
-        .failures
+    if !plan
+        .endpoints()
         .iter()
-        .any(|failure| failure.id == fault.failure)
+        .flat_map(|endpoint| &endpoint.states)
+        .any(|state| state.failure_target(&fault.failure).is_some())
     {
         return Err(RuntimeError::Application(format!(
             "fault plan references undeclared failure {}",
             fault.failure
         )));
     }
+    if let Some(peer_failure) = &fault.peer_failure
+        && !plan
+            .endpoints()
+            .iter()
+            .flat_map(|endpoint| &endpoint.states)
+            .any(|state| state.failure_target(peer_failure).is_some())
+    {
+        return Err(RuntimeError::Application(format!(
+            "fault plan references undeclared peer failure {peer_failure}"
+        )));
+    }
     let fault_plan = fault.clone();
     let (client_transport, server_transport) = memory_pair();
-    let mut client_transport =
-        FaultInjectingTransport::new(client_transport, "client", fault.clone())?;
-    let mut server_transport = FaultInjectingTransport::new(server_transport, "server", fault)?;
-    let client_fired = client_transport.fired();
-    let server_fired = server_transport.fired();
-    let client_conversation = conversation.clone();
-    let server_conversation = conversation.clone();
+    let fired = Arc::new(AtomicBool::new(false));
+    let mut client_transport = FaultInjectingTransport::with_fired(
+        client_transport,
+        "client",
+        fault.clone(),
+        Arc::clone(&fired),
+    )?;
+    let mut server_transport =
+        FaultInjectingTransport::with_fired(server_transport, "server", fault, Arc::clone(&fired))?;
     let prompt = prompt.to_string();
     let (client, server) = std::thread::scope(|scope| {
-        let server_worker = scope.spawn(move || {
-            run_generate_server(&server_conversation, &mut server_transport, token_limit)
-        });
+        let server_worker =
+            scope.spawn(move || run_generate_server_plan(plan, &mut server_transport, token_limit));
         let client_worker = scope.spawn(move || {
-            run_generate_client(
-                &client_conversation,
-                &mut client_transport,
-                &prompt,
-                cancel_after,
-            )
+            run_generate_client_plan(plan, &mut client_transport, &prompt, cancel_after)
         });
         let client = client_worker
             .join()
@@ -1103,7 +1186,7 @@ pub fn run_memory_fault_demo(
             .map_err(|_| RuntimeError::WorkerPanicked)??;
         Ok::<_, RuntimeError>((client, server))
     })?;
-    if !client_fired.load(Ordering::Relaxed) && !server_fired.load(Ordering::Relaxed) {
+    if !fired.load(Ordering::Relaxed) {
         return Err(RuntimeError::Application(format!(
             "fault plan did not fire: {} {} occurrence {} was not reached",
             fault_plan.role,
@@ -1122,20 +1205,28 @@ pub fn run_tcp_demo(
     token_limit: usize,
     cancel_after: Option<usize>,
 ) -> Result<DemoReport, RuntimeError> {
+    let plan = PreparedPlan::compile(conversation)?;
+    run_tcp_plan_demo(&plan, prompt, token_limit, cancel_after)
+}
+
+pub fn run_tcp_plan_demo(
+    plan: &PreparedPlan,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+) -> Result<DemoReport, RuntimeError> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let address = listener.local_addr()?;
-    let client_conversation = conversation.clone();
-    let server_conversation = conversation.clone();
     let prompt = prompt.to_string();
     let (client, server) = std::thread::scope(|scope| {
         let server_worker = scope.spawn(move || {
             let (stream, _) = listener.accept()?;
             let mut transport = TcpTransport::from_stream(stream)?;
-            run_generate_server(&server_conversation, &mut transport, token_limit)
+            run_generate_server_plan(plan, &mut transport, token_limit)
         });
         let client_worker = scope.spawn(move || {
             let mut transport = TcpTransport::connect(address)?;
-            run_generate_client(&client_conversation, &mut transport, &prompt, cancel_after)
+            run_generate_client_plan(plan, &mut transport, &prompt, cancel_after)
         });
         let client = client_worker
             .join()
@@ -1154,20 +1245,28 @@ pub fn run_quic_demo(
     token_limit: usize,
     cancel_after: Option<usize>,
 ) -> Result<DemoReport, RuntimeError> {
+    let plan = PreparedPlan::compile(conversation)?;
+    run_quic_plan_demo(&plan, prompt, token_limit, cancel_after)
+}
+
+pub fn run_quic_plan_demo(
+    plan: &PreparedPlan,
+    prompt: &str,
+    token_limit: usize,
+    cancel_after: Option<usize>,
+) -> Result<DemoReport, RuntimeError> {
     let listener = QuicListener::bind("127.0.0.1:0".parse().expect("valid address"))?;
     let address = listener.local_addr()?;
     let trusted_certificate = listener.certificate_der().to_vec();
-    let client_conversation = conversation.clone();
-    let server_conversation = conversation.clone();
     let prompt = prompt.to_string();
     let (client, server) = std::thread::scope(|scope| {
         let server_worker = scope.spawn(move || {
             let mut transport = listener.accept()?;
-            run_generate_server(&server_conversation, &mut transport, token_limit)
+            run_generate_server_plan(plan, &mut transport, token_limit)
         });
         let client_worker = scope.spawn(move || {
             let mut transport = QuicTransport::connect(address, &trusted_certificate)?;
-            run_generate_client(&client_conversation, &mut transport, &prompt, cancel_after)
+            run_generate_client_plan(plan, &mut transport, &prompt, cancel_after)
         });
         let client = client_worker
             .join()
@@ -1279,6 +1378,7 @@ fn report(
         transport,
         conversation: machine.conversation().to_string(),
         conversation_identity: machine.identity().to_string(),
+        plan_identity: machine.plan_identity().to_string(),
         semantic_trace_identity: trace_identity(&semantic_trace),
         frames: machine.sequence(),
         tokens,
@@ -1304,6 +1404,7 @@ fn demo_report(
     DemoReport {
         transport_plan: transport_plan.to_string(),
         conversation_identity: client.conversation_identity.clone(),
+        plan_identity: client.plan_identity.clone(),
         semantic_trace_equivalent,
         outcome_equivalent,
         fault_plan: None,
@@ -1315,6 +1416,7 @@ fn demo_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plan::EvePlan;
 
     fn conversation() -> Conversation {
         serde_json::from_str(include_str!("../examples/generate.eveconv.json")).unwrap()
@@ -1363,6 +1465,16 @@ mod tests {
     }
 
     #[test]
+    fn plan_sessions_share_the_projected_endpoint_graph() {
+        let artifact = EvePlan::compile(&conversation()).unwrap();
+        let plan = artifact.prepare().unwrap();
+        let first = EndpointMachine::from_plan(&plan, "client").unwrap();
+        let second = EndpointMachine::from_plan(&plan, "client").unwrap();
+        assert!(Arc::ptr_eq(&first.endpoint, &second.endpoint));
+        assert_eq!(first.plan_identity(), plan.plan_identity());
+    }
+
+    #[test]
     fn deterministic_transport_fault_reaches_typed_failure_on_both_roles() {
         let report = run_memory_fault_demo(
             &conversation(),
@@ -1374,6 +1486,7 @@ mod tests {
                 operation: FaultOperation::Send,
                 occurrence: 2,
                 failure: "transport.closed".to_string(),
+                peer_failure: None,
             },
         )
         .unwrap();
@@ -1403,6 +1516,7 @@ mod tests {
                 operation: FaultOperation::Receive,
                 occurrence: 2,
                 failure: "transport.closed".to_string(),
+                peer_failure: None,
             },
         )
         .unwrap();
@@ -1410,6 +1524,50 @@ mod tests {
         assert!(report.server.completed);
         assert!(report.outcome_equivalent);
         assert_eq!(report.client.failure, report.server.failure);
+    }
+
+    #[test]
+    fn asymmetric_fault_preserves_each_endpoints_local_truth() {
+        let report = run_memory_fault_demo(
+            &conversation(),
+            "hello",
+            5,
+            None,
+            FaultPlan {
+                role: "server".to_string(),
+                operation: FaultOperation::Send,
+                occurrence: 2,
+                failure: "transport.timeout".to_string(),
+                peer_failure: Some("transport.uncertain".to_string()),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.server.failure.as_deref(), Some("transport.timeout"));
+        assert_eq!(
+            report.client.failure.as_deref(),
+            Some("transport.uncertain")
+        );
+        assert_eq!(report.server.final_state, "transport-timeout");
+        assert_eq!(report.client.final_state, "transport-uncertain");
+        assert!(!report.outcome_equivalent);
+        assert!(!report.semantic_trace_equivalent);
+    }
+
+    #[test]
+    fn io_errors_map_to_specific_declared_failures() {
+        let cases = [
+            (std::io::ErrorKind::TimedOut, "transport.timeout"),
+            (std::io::ErrorKind::ConnectionReset, "transport.reset"),
+            (
+                std::io::ErrorKind::ConnectionRefused,
+                "transport.unreachable",
+            ),
+            (std::io::ErrorKind::UnexpectedEof, "transport.closed"),
+        ];
+        for (kind, expected) in cases {
+            let error = RuntimeError::Io(std::io::Error::from(kind));
+            assert_eq!(error.transport_failure(), Some(expected));
+        }
     }
 
     #[test]
@@ -1424,6 +1582,7 @@ mod tests {
                 operation: FaultOperation::Send,
                 occurrence: 99,
                 failure: "transport.closed".to_string(),
+                peer_failure: None,
             },
         )
         .unwrap_err();
@@ -1476,6 +1635,8 @@ mod tests {
         let quic = run_quic_demo(&conversation(), "same input", 3, None).unwrap();
         assert_eq!(memory.conversation_identity, tcp.conversation_identity);
         assert_eq!(memory.conversation_identity, quic.conversation_identity);
+        assert_eq!(memory.plan_identity, tcp.plan_identity);
+        assert_eq!(memory.plan_identity, quic.plan_identity);
         assert_eq!(
             memory.client.semantic_trace_identity,
             tcp.client.semantic_trace_identity

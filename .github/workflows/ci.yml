@@ -34,3 +34,8 @@ jobs:
 
       - name: Validate Eve Conversation example
         run: check-jsonschema --schemafile spec/eve-conversation-v0.schema.json examples/generate.eveconv.json
+
+      - name: Compile and validate Eve Plan
+        run: |
+          cargo run --locked -- compile
+          check-jsonschema --schemafile spec/eve-plan-v0.schema.json build/generate.eveplan.json

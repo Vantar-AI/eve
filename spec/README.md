@@ -6,10 +6,13 @@ This directory contains machine-readable experiments for the canonical Eve Graph
 
 - [`eve-graph-v0.schema.json`](eve-graph-v0.schema.json) — JSON Schema for the first interchange experiment.
 - [`eve-conversation-v0.schema.json`](eve-conversation-v0.schema.json) — executable two-role conversation interchange used by the Rust prototype.
+- [`eve-plan-v0.schema.json`](eve-plan-v0.schema.json) — compiled two-endpoint execution-plan artifact used to start reusable sessions.
 
 The JSON representation is an interchange and debugging format. It is not yet the canonical binary encoding and must not be treated as stable.
 
 The original Eve Graph v0 schema predates the conversation-state model in [RFC-0002](../rfcs/0002-conversation-is-the-computation.md). The separate Conversation v0 experiment now represents two roles, sends, choices, loops, cancellation, declared failures, success terminals, and failure terminals without pretending the broader Graph schema is already stable. In v0, an `on_failure` edge must target a terminal `fail` state carrying the same declared failure ID; retry and recovery graphs are deferred.
+
+Eve Plan v0 is a derived artifact, not another semantic source. It carries the experimental conversation identity, deterministic plan identity, and projected endpoint graphs. JSON Schema checks its representation; the Rust plan verifier additionally recalculates the digest and validates state and role references before sessions are created.
 
 ## Canonicalization experiment
 

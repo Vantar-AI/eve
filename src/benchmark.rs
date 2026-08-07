@@ -5,8 +5,10 @@
 //! overhead, not network or model performance, and makes no claim that Eve is faster.
 
 use crate::Conversation;
-use crate::runtime::{RuntimeError, run_memory_demo};
+use crate::plan::{EvePlan, PlanError, PreparedPlan};
+use crate::runtime::{EndpointMachine, RuntimeError, WireEnvelope, run_memory_plan_demo};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::json;
 use std::hint::black_box;
 use std::sync::mpsc;
 use std::time::Instant;
@@ -14,6 +16,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum BenchmarkError {
+    #[error(transparent)]
+    Plan(#[from] PlanError),
     #[error(transparent)]
     Runtime(#[from] RuntimeError),
     #[error("benchmark iterations must be greater than zero")]
@@ -51,17 +55,26 @@ pub struct BenchmarkStats {
 pub struct BenchmarkReport {
     pub benchmark: &'static str,
     pub config: BenchmarkConfig,
-    pub eve_reference: BenchmarkStats,
+    pub eve_compile: BenchmarkStats,
+    pub eve_session_startup: BenchmarkStats,
+    pub eve_checked_transition: BenchmarkStats,
+    pub baseline_json_transition: BenchmarkStats,
+    pub eve_cold: BenchmarkStats,
+    pub eve_warm: BenchmarkStats,
     pub conventional_baseline: BenchmarkStats,
-    pub median_overhead_ratio: f64,
+    pub cold_median_overhead_ratio: f64,
+    pub warm_median_overhead_ratio: f64,
+    pub warm_speedup_over_cold: f64,
+    pub transition_median_overhead_ratio: f64,
     pub notes: Vec<&'static str>,
 }
 
 /// Compare the Eve reference memory runtime with a hand-written JSON protocol.
 ///
 /// Both variants create two worker threads, cross in-process channels, serialize every
-/// protocol message to JSON, and complete the same request/token/done exchange. Eve also
-/// projects and checks its conversation machines and validates every wire envelope.
+/// protocol message to JSON, and complete the same request/token/done exchange. Cold Eve
+/// compiles first; warm Eve reuses a verified plan. Separate samples expose session startup
+/// and one checked JSON transition.
 pub fn run_reference_benchmark(
     conversation: &Conversation,
     prompt: &str,
@@ -73,28 +86,64 @@ pub fn run_reference_benchmark(
         return Err(BenchmarkError::InvalidIterations);
     }
 
+    let plan = PreparedPlan::compile(conversation)?;
     for _ in 0..warmup_iterations {
-        run_eve_iteration(conversation, prompt, tokens)?;
+        run_compile_iteration(conversation)?;
+        run_eve_cold_iteration(conversation, prompt, tokens)?;
+        run_eve_warm_iteration(&plan, prompt, tokens)?;
         run_baseline_iteration(prompt, tokens)?;
+        measure_session_startup(&plan)?;
+        measure_eve_checked_transition(&plan, prompt)?;
+        measure_baseline_json_transition(prompt)?;
     }
 
-    let mut eve_samples = Vec::with_capacity(iterations);
+    let mut compile_samples = Vec::with_capacity(iterations);
+    let mut session_samples = Vec::with_capacity(iterations);
+    let mut eve_transition_samples = Vec::with_capacity(iterations);
+    let mut baseline_transition_samples = Vec::with_capacity(iterations);
+    let mut cold_samples = Vec::with_capacity(iterations);
+    let mut warm_samples = Vec::with_capacity(iterations);
     let mut baseline_samples = Vec::with_capacity(iterations);
     for index in 0..iterations {
-        // Alternate execution order to reduce a simple first/second ordering bias.
-        if index % 2 == 0 {
-            eve_samples.push(measure(|| run_eve_iteration(conversation, prompt, tokens))?);
-            baseline_samples.push(measure(|| run_baseline_iteration(prompt, tokens))?);
-        } else {
-            baseline_samples.push(measure(|| run_baseline_iteration(prompt, tokens))?);
-            eve_samples.push(measure(|| run_eve_iteration(conversation, prompt, tokens))?);
+        // Rotate execution order to reduce a simple first/last ordering bias.
+        for offset in 0..4 {
+            match (index + offset) % 4 {
+                0 => compile_samples.push(measure(|| run_compile_iteration(conversation))?),
+                1 => cold_samples.push(measure(|| {
+                    run_eve_cold_iteration(conversation, prompt, tokens)
+                })?),
+                2 => warm_samples.push(measure(|| run_eve_warm_iteration(&plan, prompt, tokens))?),
+                3 => baseline_samples.push(measure(|| run_baseline_iteration(prompt, tokens))?),
+                _ => unreachable!("modulo four is in range"),
+            }
         }
     }
 
-    let eve_reference = stats(eve_samples);
+    for index in 0..iterations {
+        session_samples.push(measure_session_startup(&plan)?);
+        if index % 2 == 0 {
+            eve_transition_samples.push(measure_eve_checked_transition(&plan, prompt)?);
+            baseline_transition_samples.push(measure_baseline_json_transition(prompt)?);
+        } else {
+            baseline_transition_samples.push(measure_baseline_json_transition(prompt)?);
+            eve_transition_samples.push(measure_eve_checked_transition(&plan, prompt)?);
+        }
+    }
+
+    let eve_compile = stats(compile_samples);
+    let eve_session_startup = stats(session_samples);
+    let eve_checked_transition = stats(eve_transition_samples);
+    let baseline_json_transition = stats(baseline_transition_samples);
+    let eve_cold = stats(cold_samples);
+    let eve_warm = stats(warm_samples);
     let conventional_baseline = stats(baseline_samples);
-    let median_overhead_ratio =
-        eve_reference.median_ns as f64 / conventional_baseline.median_ns.max(1) as f64;
+    let cold_median_overhead_ratio =
+        eve_cold.median_ns as f64 / conventional_baseline.median_ns.max(1) as f64;
+    let warm_median_overhead_ratio =
+        eve_warm.median_ns as f64 / conventional_baseline.median_ns.max(1) as f64;
+    let warm_speedup_over_cold = eve_cold.median_ns as f64 / eve_warm.median_ns.max(1) as f64;
+    let transition_median_overhead_ratio =
+        eve_checked_transition.median_ns as f64 / baseline_json_transition.median_ns.max(1) as f64;
 
     Ok(BenchmarkReport {
         benchmark: "request-token-done/json-channels/v0",
@@ -112,24 +161,53 @@ pub fn run_reference_benchmark(
             target_os: std::env::consts::OS,
             target_arch: std::env::consts::ARCH,
         },
-        eve_reference,
+        eve_compile,
+        eve_session_startup,
+        eve_checked_transition,
+        baseline_json_transition,
+        eve_cold,
+        eve_warm,
         conventional_baseline,
-        median_overhead_ratio,
+        cold_median_overhead_ratio,
+        warm_median_overhead_ratio,
+        warm_speedup_over_cold,
+        transition_median_overhead_ratio,
         notes: vec![
             "This is a local reference-runtime microbenchmark, not a production performance claim.",
             "Both variants include thread creation, channels, JSON encoding, and JSON decoding in every sample.",
-            "Eve additionally includes projection, semantic identity, state-machine checks, and full wire envelopes.",
+            "Eve cold includes validation, identity, projection, session startup, state-machine checks, and full wire envelopes.",
+            "Eve warm reuses a verified plan but still includes session startup, state-machine checks, and full wire envelopes.",
+            "Checked-transition samples exclude session creation and channels; they include two local machine transitions plus Eve envelope JSON encoding and decoding.",
             "Run the release binary on an otherwise idle machine and compare saved reports, not isolated runs.",
         ],
     })
 }
 
-fn run_eve_iteration(
+fn run_compile_iteration(conversation: &Conversation) -> Result<(), BenchmarkError> {
+    let plan = black_box(EvePlan::compile(conversation)?);
+    if plan.endpoints.len() != 2 {
+        return Err(BenchmarkError::Protocol(
+            "compiled plan did not contain two endpoints".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn run_eve_cold_iteration(
     conversation: &Conversation,
     prompt: &str,
     tokens: usize,
 ) -> Result<(), BenchmarkError> {
-    let report = black_box(run_memory_demo(conversation, prompt, tokens, None)?);
+    let plan = PreparedPlan::compile(conversation)?;
+    run_eve_warm_iteration(&plan, prompt, tokens)
+}
+
+fn run_eve_warm_iteration(
+    plan: &PreparedPlan,
+    prompt: &str,
+    tokens: usize,
+) -> Result<(), BenchmarkError> {
+    let report = black_box(run_memory_plan_demo(plan, prompt, tokens, None)?);
     if !report.client.successful
         || !report.server.successful
         || report.client.tokens.len() != tokens
@@ -140,6 +218,44 @@ fn run_eve_iteration(
         ));
     }
     Ok(())
+}
+
+fn measure_session_startup(plan: &PreparedPlan) -> Result<u64, BenchmarkError> {
+    let start = Instant::now();
+    let client = EndpointMachine::from_plan(plan, "client")?;
+    let server = EndpointMachine::from_plan(plan, "server")?;
+    black_box((client.current_state(), server.current_state()));
+    Ok(elapsed_ns(start))
+}
+
+fn measure_eve_checked_transition(
+    plan: &PreparedPlan,
+    prompt: &str,
+) -> Result<u64, BenchmarkError> {
+    let mut client = EndpointMachine::from_plan(plan, "client")?;
+    let mut server = EndpointMachine::from_plan(plan, "server")?;
+    let start = Instant::now();
+    let envelope = client.emit_data(json!({ "text": prompt }))?;
+    let encoded = serde_json::to_vec(&envelope)?;
+    let decoded: WireEnvelope = serde_json::from_slice(&encoded)?;
+    let frame = server.accept(decoded)?;
+    black_box(frame);
+    Ok(elapsed_ns(start))
+}
+
+fn measure_baseline_json_transition(prompt: &str) -> Result<u64, BenchmarkError> {
+    let start = Instant::now();
+    let message = ClientMessage::Prompt {
+        text: prompt.to_string(),
+    };
+    let encoded = serde_json::to_vec(&message)?;
+    let decoded: ClientMessage = serde_json::from_slice(&encoded)?;
+    if !matches!(decoded, ClientMessage::Prompt { text } if text == prompt) {
+        return Err(BenchmarkError::Protocol(
+            "baseline transition changed the prompt".to_string(),
+        ));
+    }
+    Ok(elapsed_ns(start))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -264,7 +380,11 @@ where
 {
     let start = Instant::now();
     operation()?;
-    Ok(start.elapsed().as_nanos().min(u64::MAX as u128) as u64)
+    Ok(elapsed_ns(start))
+}
+
+fn elapsed_ns(start: Instant) -> u64 {
+    start.elapsed().as_nanos().min(u64::MAX as u128) as u64
 }
 
 fn stats(mut samples: Vec<u64>) -> BenchmarkStats {
@@ -295,8 +415,16 @@ mod tests {
         let report = run_reference_benchmark(&example(), "benchmark", 2, 3, 1).unwrap();
         assert_eq!(report.config.iterations, 3);
         assert_eq!(report.config.tokens, 2);
-        assert!(report.eve_reference.median_ns > 0);
+        assert!(report.eve_compile.median_ns > 0);
+        assert!(report.eve_session_startup.median_ns > 0);
+        assert!(report.eve_checked_transition.median_ns > 0);
+        assert!(report.baseline_json_transition.median_ns > 0);
+        assert!(report.eve_cold.median_ns > 0);
+        assert!(report.eve_warm.median_ns > 0);
         assert!(report.conventional_baseline.median_ns > 0);
-        assert!(report.median_overhead_ratio.is_finite());
+        assert!(report.cold_median_overhead_ratio.is_finite());
+        assert!(report.warm_median_overhead_ratio.is_finite());
+        assert!(report.warm_speedup_over_cold.is_finite());
+        assert!(report.transition_median_overhead_ratio.is_finite());
     }
 }

@@ -6,14 +6,14 @@
 
 **The graph is the program.** Compile computation, communication, placement, and evolution into one executable plan.
 
-[RFC-0002: Conversation](rfcs/0002-conversation-is-the-computation.md) · [RFC-0001: Kernel](rfcs/0001-eve-language-kernel.md) · [Runtime](docs/runtime.md) · [Benchmark](docs/benchmark.md) · [Vision](docs/vision.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md)
+[RFC-0002: Conversation](rfcs/0002-conversation-is-the-computation.md) · [RFC-0001: Kernel](rfcs/0001-eve-language-kernel.md) · [Plan](docs/plan.md) · [Runtime](docs/runtime.md) · [Benchmark](docs/benchmark.md) · [Vision](docs/vision.md) · [Architecture](docs/architecture.md) · [Roadmap](docs/roadmap.md)
 
 </div>
 
 ---
 
 > [!IMPORTANT]
-> Eve is an early research prototype. The repository now contains a conversation checker, endpoint projector, and minimal memory/TCP/QUIC reference runtime. It is not a stable language or production networking system.
+> Eve is an early research prototype. The repository now contains a conversation checker, endpoint projector, reusable execution-plan compiler, and minimal memory/TCP/QUIC reference runtime. It is not a stable language or production networking system.
 
 AI software is becoming distributed, persistent, and increasingly authored by other software. Its unit of execution is no longer a process on one machine: it is a changing graph of models, tools, memory, accelerators, and services spread across a data center.
 
@@ -70,6 +70,12 @@ cargo run -- check examples/generate.eveconv.json
 # Derive one local protocol machine for each server role
 cargo run -- project examples/generate.eveconv.json
 
+# Compile and verify reusable endpoint machines once
+cargo run -- compile examples/generate.eveconv.json
+
+# Start lightweight sessions from that plan over any implemented transport
+cargo run -- run-plan build/generate.eveplan.json --transport memory
+
 # Accept a valid request → token → cancel conversation
 cargo run -- verify-trace \
   examples/generate.eveconv.json \
@@ -84,27 +90,29 @@ cargo run -- demo --transport tcp --tokens 3
 # Execute it over authenticated and encrypted loopback QUIC
 cargo run -- demo --transport quic --tokens 3
 
-# Fail the server's second send and reach the declared failure state
+# Give each endpoint its honest local view of an asymmetric failure
 cargo run -- fault-demo --fault-role server \
-  --fault-operation send --fault-at 2
+  --fault-operation send --fault-at 2 \
+  --failure transport.timeout \
+  --peer-failure transport.uncertain
 
 # Measure the reference runtime against a hand-written JSON protocol
 cargo run --release --locked -- benchmark \
-  --iterations 200 --warmup 20 --tokens 3
+  --iterations 500 --warmup 50 --tokens 3
 
 # Run the test suite
 cargo test
 ```
 
-Projection produces `build/endpoints/client.endpoint.json` and `server.endpoint.json`. The client and server receive dual actions: every send becomes the peer's receive, every selection becomes the peer's branch, and cancellation is explicit on both sides.
+Projection produces `build/endpoints/client.endpoint.json` and `server.endpoint.json`. Compilation produces `build/generate.eveplan.json`: a verified, deterministic artifact containing both immutable endpoint graphs. New sessions share those graphs instead of repeating validation and projection. See [Eve Plan v0](docs/plan.md).
 
 The invalid trace in `examples/traces/generate-wrong-order.invalid.json` demonstrates the central property: a `token` message has the correct data type, but Eve rejects it when the server has not first selected the `token` conversation branch.
 
 The runtime derives both endpoints from the same graph. Every wire envelope carries the experimental SHA-256 semantic identity, expected state, and monotonic sequence. A demo reports whether both roles observed the same semantic trace even when the transport plan changes.
 
-Transport closure is a declared `transport.closed` branch in the example rather than an untyped Rust error. The deterministic fault demo can fail an exact role, operation, and one-based occurrence. Each endpoint records its local `FAULT` observation, so observer-specific trace hashes may differ while both reports still agree on the typed terminal outcome.
+Transport closure, timeout, reset, unreachable, and uncertainty are declared branches rather than untyped Rust errors. The deterministic fault demo can fail an exact role, operation, and one-based occurrence. An injected server timeout can produce `transport.timeout` locally while the peer records `transport.uncertain`; Eve does not pretend a partition gives both roles identical knowledge.
 
-The first release-mode microbenchmark puts the current cost in view: on one Apple M4 run, the startup-heavy Eve reference path had a 96.5 µs median versus 44.8 µs for the hand-written baseline, or 2.16× overhead. This is a baseline for optimization, not a general performance claim; see [the benchmark design and limitations](docs/benchmark.md).
+The Plan v0 benchmark makes both the gain and remaining cost explicit. Creating two plan-backed sessions took a 125 ns median. Warm whole-exchange execution was 74.1 µs versus 114.5 µs cold and 41.8 µs for the hand-written baseline. The 1.77× warm overhead misses the provisional 1.25× target; isolated checked transitions identify the full JSON envelope as the next bottleneck. These are optimization evidence, not general performance claims; see [the benchmark design and limitations](docs/benchmark.md).
 
 To run the endpoints as separate processes:
 
@@ -172,6 +180,7 @@ docs/
   vision.md          Long-term thesis and use cases
   design.md          Principles, semantic model, and non-goals
   architecture.md    Proposed compiler and runtime layers
+  plan.md            Reusable Eve Plan v0 artifact and session boundary
   runtime.md         Executable memory/TCP reference experiment
   benchmark.md       Reproducible conventional-baseline microbenchmark
   language.md        Illustrative language surface
@@ -184,6 +193,7 @@ rfcs/
 spec/
   eve-graph-...json  Experimental machine-readable graph schema
   eve-conversation-...json  Executable global conversation schema
+  eve-plan-...json   Compiled execution-plan schema
 examples/
   hello.eve          Minimal server-to-server flow
   hello.evegraph.json  The same idea as a typed incomplete graph
@@ -193,6 +203,7 @@ examples/
 src/
   benchmark.rs       Eve versus hand-written reference benchmark
   lib.rs             Checker, endpoint projection, trace validation
+  plan.rs            Plan compiler, identity, and artifact verification
   runtime.rs         Endpoint executor and memory/TCP/QUIC wire plans
   main.rs            Experimental `eve` CLI
 benchmarks/

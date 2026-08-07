@@ -1,0 +1,360 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vantar.ai/eve/spec/eve-plan-v0.schema.json",
+  "title": "Eve Plan v0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "eve_plan",
+    "conversation",
+    "conversation_identity",
+    "plan_identity",
+    "endpoints"
+  ],
+  "properties": {
+    "eve_plan": {
+      "const": "0.1.0"
+    },
+    "conversation": {
+      "$ref": "#/$defs/id"
+    },
+    "conversation_identity": {
+      "$ref": "#/$defs/sha256"
+    },
+    "plan_identity": {
+      "$ref": "#/$defs/sha256"
+    },
+    "endpoints": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/endpoint"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "onFailure": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "branches": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/id"
+      }
+    },
+    "deadline": {
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9]+(ns|us|ms|s|m|h)$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eve_endpoint",
+        "conversation",
+        "role",
+        "initial",
+        "states"
+      ],
+      "properties": {
+        "eve_endpoint": {
+          "const": "0.1.0"
+        },
+        "conversation": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "$ref": "#/$defs/id"
+        },
+        "initial": {
+          "$ref": "#/$defs/id"
+        },
+        "states": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/state"
+          }
+        }
+      }
+    },
+    "state": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/sendState"
+        },
+        {
+          "$ref": "#/$defs/receiveState"
+        },
+        {
+          "$ref": "#/$defs/selectState"
+        },
+        {
+          "$ref": "#/$defs/branchState"
+        },
+        {
+          "$ref": "#/$defs/sendCancelState"
+        },
+        {
+          "$ref": "#/$defs/receiveCancelState"
+        },
+        {
+          "$ref": "#/$defs/endState"
+        },
+        {
+          "$ref": "#/$defs/failState"
+        }
+      ]
+    },
+    "sendState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id",
+        "to",
+        "message",
+        "next",
+        "deadline",
+        "on_failure"
+      ],
+      "properties": {
+        "op": {
+          "const": "send"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "message": {
+          "$ref": "#/$defs/id"
+        },
+        "next": {
+          "$ref": "#/$defs/id"
+        },
+        "deadline": {
+          "$ref": "#/$defs/deadline"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
+        }
+      }
+    },
+    "receiveState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id",
+        "from",
+        "message",
+        "next",
+        "deadline",
+        "on_failure"
+      ],
+      "properties": {
+        "op": {
+          "const": "receive"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "message": {
+          "$ref": "#/$defs/id"
+        },
+        "next": {
+          "$ref": "#/$defs/id"
+        },
+        "deadline": {
+          "$ref": "#/$defs/deadline"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
+        }
+      }
+    },
+    "selectState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id",
+        "branches",
+        "on_failure"
+      ],
+      "properties": {
+        "op": {
+          "const": "select"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "branches": {
+          "$ref": "#/$defs/branches"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
+        }
+      }
+    },
+    "branchState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id",
+        "from",
+        "branches",
+        "on_failure"
+      ],
+      "properties": {
+        "op": {
+          "const": "branch"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "branches": {
+          "$ref": "#/$defs/branches"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
+        }
+      }
+    },
+    "sendCancelState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id",
+        "to",
+        "scope",
+        "next",
+        "on_failure"
+      ],
+      "properties": {
+        "op": {
+          "const": "send_cancel"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "to": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "$ref": "#/$defs/id"
+        },
+        "next": {
+          "$ref": "#/$defs/id"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
+        }
+      }
+    },
+    "receiveCancelState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id",
+        "from",
+        "scope",
+        "next",
+        "on_failure"
+      ],
+      "properties": {
+        "op": {
+          "const": "receive_cancel"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "from": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "$ref": "#/$defs/id"
+        },
+        "next": {
+          "$ref": "#/$defs/id"
+        },
+        "on_failure": {
+          "$ref": "#/$defs/onFailure"
+        }
+      }
+    },
+    "endState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id"
+      ],
+      "properties": {
+        "op": {
+          "const": "end"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "failState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "op",
+        "id",
+        "failure"
+      ],
+      "properties": {
+        "op": {
+          "const": "fail"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "failure": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    }
+  }
+}

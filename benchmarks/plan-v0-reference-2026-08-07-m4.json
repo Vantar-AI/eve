@@ -1,0 +1,74 @@
+{
+  "benchmark": "request-token-done/json-channels/v0",
+  "config": {
+    "eve_version": "0.1.0",
+    "iterations": 500,
+    "warmup_iterations": 50,
+    "tokens": 3,
+    "prompt_bytes": 33,
+    "build_profile": "release",
+    "target_os": "macos",
+    "target_arch": "aarch64"
+  },
+  "eve_compile": {
+    "min_ns": 39042,
+    "median_ns": 39959,
+    "mean_ns": 40015,
+    "p95_ns": 40625,
+    "max_ns": 50834
+  },
+  "eve_session_startup": {
+    "min_ns": 83,
+    "median_ns": 125,
+    "mean_ns": 115,
+    "p95_ns": 125,
+    "max_ns": 459
+  },
+  "eve_checked_transition": {
+    "min_ns": 2125,
+    "median_ns": 2208,
+    "mean_ns": 2215,
+    "p95_ns": 2291,
+    "max_ns": 3000
+  },
+  "baseline_json_transition": {
+    "min_ns": 208,
+    "median_ns": 250,
+    "mean_ns": 269,
+    "p95_ns": 292,
+    "max_ns": 417
+  },
+  "eve_cold": {
+    "min_ns": 109042,
+    "median_ns": 114500,
+    "mean_ns": 115623,
+    "p95_ns": 122875,
+    "max_ns": 154416
+  },
+  "eve_warm": {
+    "min_ns": 69250,
+    "median_ns": 74083,
+    "mean_ns": 75336,
+    "p95_ns": 83000,
+    "max_ns": 115291
+  },
+  "conventional_baseline": {
+    "min_ns": 35666,
+    "median_ns": 41833,
+    "mean_ns": 42798,
+    "p95_ns": 50167,
+    "max_ns": 70125
+  },
+  "cold_median_overhead_ratio": 2.737073602180097,
+  "warm_median_overhead_ratio": 1.77092247746994,
+  "warm_speedup_over_cold": 1.5455637595669722,
+  "transition_median_overhead_ratio": 8.832,
+  "notes": [
+    "This is a local reference-runtime microbenchmark, not a production performance claim.",
+    "Both variants include thread creation, channels, JSON encoding, and JSON decoding in every sample.",
+    "Eve cold includes validation, identity, projection, session startup, state-machine checks, and full wire envelopes.",
+    "Eve warm reuses a verified plan but still includes session startup, state-machine checks, and full wire envelopes.",
+    "Checked-transition samples exclude session creation and channels; they include two local machine transitions plus Eve envelope JSON encoding and decoding.",
+    "Run the release binary on an otherwise idle machine and compare saved reports, not isolated runs."
+  ]
+}

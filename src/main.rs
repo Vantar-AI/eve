@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use eve::benchmark::run_reference_benchmark;
+use eve::plan::EvePlan;
 use eve::runtime::{
     FaultOperation, FaultPlan, QuicListener, QuicTransport, TcpTransport, run_generate_client,
-    run_generate_server, run_memory_demo, run_memory_fault_demo, run_quic_demo, run_tcp_demo,
+    run_generate_server, run_memory_demo, run_memory_fault_demo, run_memory_plan_demo,
+    run_quic_demo, run_quic_plan_demo, run_tcp_demo, run_tcp_plan_demo,
 };
 use eve::{Conversation, Frame, project, validate, verify_trace};
 use serde::de::DeserializeOwned;
@@ -35,6 +37,29 @@ enum Command {
         conversation: PathBuf,
         #[arg(long, default_value = "build/endpoints")]
         out: PathBuf,
+    },
+    /// Compile one conversation into a reusable, verified Eve Plan.
+    Compile {
+        #[arg(default_value = "examples/generate.eveconv.json")]
+        conversation: PathBuf,
+        #[arg(long, default_value = "build/generate.eveplan.json")]
+        out: PathBuf,
+    },
+    /// Execute a previously compiled Eve Plan without re-projecting the conversation.
+    RunPlan {
+        #[arg(default_value = "build/generate.eveplan.json")]
+        plan: PathBuf,
+        #[arg(long, value_enum, default_value_t = DemoTransport::Memory)]
+        transport: DemoTransport,
+        #[arg(
+            long,
+            default_value = "Explain why the conversation is the computation."
+        )]
+        prompt: String,
+        #[arg(long, default_value_t = 3)]
+        tokens: usize,
+        #[arg(long)]
+        cancel_after: Option<usize>,
     },
     /// Verify that a frame trace follows the global conversation.
     VerifyTrace {
@@ -83,6 +108,9 @@ enum Command {
         /// Declared Eve failure ID to observe.
         #[arg(long, default_value = "transport.closed")]
         failure: String,
+        /// Failure observed by the peer after the injected side aborts.
+        #[arg(long)]
+        peer_failure: Option<String>,
     },
     /// Compare the Eve reference memory runtime with a hand-written JSON baseline.
     Benchmark {
@@ -201,6 +229,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("wrote {}", path.display());
             }
         }
+        Command::Compile { conversation, out } => {
+            let conversation: Conversation = read_json(&conversation)?;
+            let plan = EvePlan::compile(&conversation)?;
+            if let Some(parent) = out.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&out, serde_json::to_vec_pretty(&plan)?)?;
+            println!(
+                "compiled {} as {} ({} endpoints) to {}",
+                plan.conversation,
+                plan.plan_identity,
+                plan.endpoints.len(),
+                out.display()
+            );
+        }
+        Command::RunPlan {
+            plan,
+            transport,
+            prompt,
+            tokens,
+            cancel_after,
+        } => {
+            let artifact: EvePlan = read_json(&plan)?;
+            let plan = artifact.prepare()?;
+            let report = match transport {
+                DemoTransport::Memory => {
+                    run_memory_plan_demo(&plan, &prompt, tokens, cancel_after)?
+                }
+                DemoTransport::Tcp => run_tcp_plan_demo(&plan, &prompt, tokens, cancel_after)?,
+                DemoTransport::Quic => run_quic_plan_demo(&plan, &prompt, tokens, cancel_after)?,
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
         Command::VerifyTrace {
             conversation,
             trace,
@@ -240,6 +303,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fault_operation,
             fault_at,
             failure,
+            peer_failure,
         } => {
             let conversation: Conversation = read_json(&conversation)?;
             let report = run_memory_fault_demo(
@@ -252,6 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     operation: fault_operation.into(),
                     occurrence: fault_at,
                     failure,
+                    peer_failure,
                 },
             )?;
             println!("{}", serde_json::to_string_pretty(&report)?);
